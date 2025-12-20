@@ -19,20 +19,23 @@ pub enum ContractError {
     #[error("Insufficient pool balance - pool does not have enough stablecoins")]
     InsufficientPoolBalance {},
 
+    #[error("Invalid subdenom - {reason}")]
+    InvalidSubdenom { reason: String },
+
+    #[error("Invalid minting cap - must be greater than zero")]
+    InvalidMintingCap {},
+
+    #[error("No stablecoin sent - must send stablecoin via info.funds")]
+    NoStablecoinSent {},
+
+    #[error("No LP tokens sent - must send LP tokens via info.funds")]
+    NoLpTokensSent {},
+
+    #[error("Overflow error during {operation}")]
+    OverflowError { operation: String },
+
     #[error("Invalid address - {0}")]
     InvalidAddress(String),
-
-    #[error("Transfer failed - {0}")]
-    TransferFailed(String),
-
-    #[error("Mint failed - {0}")]
-    MintFailed(String),
-
-    #[error("Burn failed - {0}")]
-    BurnFailed(String),
-
-    #[error("Query failed - {0}")]
-    QueryFailed(String),
 
     #[error("Pool state inconsistent - total deposited does not match LP supply")]
     InconsistentPoolState {},

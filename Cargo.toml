@@ -33,14 +33,14 @@ optimize = """docker run --rm -v "$(pwd)":/code \
 
 [dependencies]
 cosmwasm-schema = "2.3.0"
-cosmwasm-std = { version = "2.3.0", features = ["cosmwasm_2_2"] }
+cosmwasm-std = { version = "2.3.0", features = ["cosmwasm_2_2", "stargate"] }
 cw-storage-plus = "2.0.0"
 cw2 = "2.0.0"
-cw20 = "2.0.0"
-cw20-base = { version = "2.0.0", features = ["library"] }
 schemars = "0.8.21"
 serde = { version = "1.0.215", default-features = false, features = ["derive"] }
 thiserror = { version = "2.0.9" }
+prost = "0.13"
+prost-types = "0.13"
 
 [dev-dependencies]
 cw-multi-test = "2.0.0"

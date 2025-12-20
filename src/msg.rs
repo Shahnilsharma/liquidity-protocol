@@ -4,10 +4,20 @@ use cosmwasm_std::{Addr, Uint128};
 /// Message sent when instantiating the contract
 #[cw_serde]
 pub struct InstantiateMsg {
-    /// Address of the CW20 stablecoin (USDT) contract
-    pub stablecoin_address: String,
-    /// Address of the CW20 LP token contract
-    pub lp_token_address: String,
+    /// Denom of the stablecoin (e.g., "uzig" or existing TokenFactory denom)
+    pub stablecoin_denom: String,
+    /// Subdenom for the LP token (will be created as coin.{contract}.{subdenom})
+    pub lp_subdenom: String,
+    /// Maximum supply cap for LP tokens
+    pub lp_minting_cap: Uint128,
+    /// Can the minting cap be changed later
+    pub can_change_minting_cap: Option<bool>,
+    /// Optional metadata URI for LP token
+    pub uri: Option<String>,
+    /// Optional URI hash for LP token metadata
+    pub uri_hash: Option<String>,
+    /// Optional description for LP token
+    pub description: Option<String>,
     /// Optional admin address (defaults to sender if not provided)
     pub admin: Option<String>,
 }
@@ -16,22 +26,15 @@ pub struct InstantiateMsg {
 #[cw_serde]
 pub enum ExecuteMsg {
     /// Deposit stablecoins to receive LP tokens
-    /// User must have approved the contract beforehand
-    Deposit {
-        /// Amount of stablecoins to deposit
-        amount: Uint128,
-    },
+    /// User must send stablecoins via info.funds
+    Deposit {},
     /// Withdraw stablecoins by burning LP tokens
-    Withdraw {
-        /// Amount of LP tokens to burn
-        amount: Uint128,
-    },
+    /// User must send LP tokens via info.funds
+    Withdraw {},
     /// Update contract configuration (admin only)
     UpdateConfig {
-        /// New stablecoin address (optional)
-        stablecoin_address: Option<String>,
-        /// New LP token address (optional)
-        lp_token_address: Option<String>,
+        /// New stablecoin denom (optional)
+        stablecoin_denom: Option<String>,
         /// New admin address (optional)
         admin: Option<String>,
     },
@@ -60,10 +63,10 @@ pub enum QueryMsg {
 /// Response for Config query
 #[cw_serde]
 pub struct ConfigResponse {
-    /// Address of the stablecoin CW20 token
-    pub stablecoin_address: Addr,
-    /// Address of the LP token CW20 contract
-    pub lp_token_address: Addr,
+    /// Denom of the stablecoin
+    pub stablecoin_denom: String,
+    /// Full denom of the LP token
+    pub lp_full_denom: String,
     /// Admin address
     pub admin: Addr,
 }

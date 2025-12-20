@@ -1,0 +1,12 @@
+# ZigChain LP Pool - TokenFactory Edition
+# Deployed on: Fri Dec 20 23:06:00 UTC 2025
+# Chain: zig-test-2
+
+export LP_POOL_ADDRESS="zig1zj22cuztwnn60n5edn7mpsgpty4q5wwk4thm0jpv62w73vrssn8snzfsn8"
+export LP_FULL_DENOM="coin.zig1zj22cuztwnn60n5edn7mpsgpty4q5wwk4thm0jpv62w73vrssn8snzfsn8.lptoken"
+export STABLECOIN_DENOM="uzig"
+export CODE_ID="1611"
+export NODE="https://public-zigchain-testnet-rpc.numia.xyz:443"
+export CHAIN_ID="zig-test-2"
+export WALLET="mynewwallet"
+export MY_ADDR="zig1ug335mpcdn2vpk8p08v4k9z7cqtdg0jj4tqr92"

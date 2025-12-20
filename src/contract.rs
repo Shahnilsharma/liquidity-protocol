@@ -1,10 +1,10 @@
 use cosmwasm_std::{
-    entry_point, to_json_binary, Addr, Binary, Deps, DepsMut, Env, MessageInfo, Response,
-    StdResult, Uint128, WasmMsg, CosmosMsg, StdError,
+    entry_point, to_json_binary, Addr, BankMsg, Binary, Coin, Deps, DepsMut, Env, MessageInfo,
+    QuerierWrapper, Response, StdResult, Uint128,
 };
 use cw2::set_contract_version;
-use cw20::{Cw20ExecuteMsg, Cw20QueryMsg, BalanceResponse};
 
+use crate::custom::{burn_tokens_msg, create_denom_msg, mint_and_send_tokens_msg};
 use crate::error::ContractError;
 use crate::msg::{
     ConfigResponse, ExecuteMsg, InstantiateMsg, MigrateMsg, PoolInfoResponse, QueryMsg,
@@ -15,22 +15,46 @@ use crate::state::{Config, PoolState, CONFIG, CONTRACT_NAME, CONTRACT_VERSION, P
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn instantiate(
     deps: DepsMut,
-    _env: Env,
+    env: Env,
     info: MessageInfo,
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
-    // Validate addresses
-    let stablecoin_addr = deps.api.addr_validate(&msg.stablecoin_address)?;
-    let lp_token_addr = deps.api.addr_validate(&msg.lp_token_address)?;
+    // Validate subdenom requirements (3-44 chars, start with lowercase)
+    if msg.lp_subdenom.len() < 3 || msg.lp_subdenom.len() > 44 {
+        return Err(ContractError::InvalidSubdenom {
+            reason: "Subdenom must be 3-44 characters".to_string(),
+        });
+    }
+
+    if !msg
+        .lp_subdenom
+        .chars()
+        .next()
+        .unwrap()
+        .is_ascii_lowercase()
+    {
+        return Err(ContractError::InvalidSubdenom {
+            reason: "Subdenom must start with lowercase letter".to_string(),
+        });
+    }
+
+    // Validate minting cap (must be > 0 as per ZigChain requirements)
+    if msg.lp_minting_cap.is_zero() {
+        return Err(ContractError::InvalidMintingCap {});
+    }
+
     let admin_addr = match msg.admin {
         Some(addr) => deps.api.addr_validate(&addr)?,
         None => info.sender.clone(),
     };
 
+    // Construct LP token full denom
+    let lp_full_denom = format!("coin.{}.{}", env.contract.address, msg.lp_subdenom);
+
     // Initialize configuration
     let config = Config {
-        stablecoin_address: stablecoin_addr.clone(),
-        lp_token_address: lp_token_addr.clone(),
+        stablecoin_denom: msg.stablecoin_denom.clone(),
+        lp_full_denom: lp_full_denom.clone(),
         admin: admin_addr.clone(),
     };
     CONFIG.save(deps.storage, &config)?;
@@ -42,13 +66,26 @@ pub fn instantiate(
     };
     POOL_STATE.save(deps.storage, &pool_state)?;
 
-    // Set contract version for migration
+    // Set contract version
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
 
+    // Create LP token denom via TokenFactory
+    let create_denom = create_denom_msg(
+        env.contract.address.to_string(),
+        msg.lp_subdenom.clone(),
+        msg.lp_minting_cap.to_string(),
+        msg.can_change_minting_cap.unwrap_or(false),
+        msg.uri,
+        msg.uri_hash,
+        msg.description,
+    )?;
+
     Ok(Response::new()
+        .add_message(create_denom)
         .add_attribute("method", "instantiate")
-        .add_attribute("stablecoin_address", stablecoin_addr)
-        .add_attribute("lp_token_address", lp_token_addr)
+        .add_attribute("stablecoin_denom", msg.stablecoin_denom)
+        .add_attribute("lp_full_denom", lp_full_denom)
+        .add_attribute("lp_minting_cap", msg.lp_minting_cap)
         .add_attribute("admin", admin_addr))
 }
 
@@ -60,13 +97,12 @@ pub fn execute(
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
-        ExecuteMsg::Deposit { amount } => execute_deposit(deps, env, info, amount),
-        ExecuteMsg::Withdraw { amount } => execute_withdraw(deps, env, info, amount),
+        ExecuteMsg::Deposit {} => execute_deposit(deps, env, info),
+        ExecuteMsg::Withdraw {} => execute_withdraw(deps, env, info),
         ExecuteMsg::UpdateConfig {
-            stablecoin_address,
-            lp_token_address,
+            stablecoin_denom,
             admin,
-        } => execute_update_config(deps, info, stablecoin_address, lp_token_address, admin),
+        } => execute_update_config(deps, info, stablecoin_denom, admin),
     }
 }
 
@@ -74,57 +110,52 @@ fn execute_deposit(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
-    amount: Uint128,
 ) -> Result<Response, ContractError> {
+    let config = CONFIG.load(deps.storage)?;
+
+    // Find and validate the stablecoin sent
+    let stablecoin_sent = info
+        .funds
+        .iter()
+        .find(|coin| coin.denom == config.stablecoin_denom)
+        .ok_or(ContractError::NoStablecoinSent {})?;
+
+    let amount = stablecoin_sent.amount;
     if amount.is_zero() {
         return Err(ContractError::InvalidZeroAmount {});
     }
 
-    let config = CONFIG.load(deps.storage)?;
-    let mut pool_state = POOL_STATE.load(deps.storage)?;
-
-    let transfer_from_msg = Cw20ExecuteMsg::TransferFrom {
-        owner: info.sender.to_string(),
-        recipient: env.contract.address.to_string(),
-        amount,
-    };
-
-    let transfer_cosmos_msg: CosmosMsg = WasmMsg::Execute {
-        contract_addr: config.stablecoin_address.to_string(),
-        msg: to_json_binary(&transfer_from_msg)?,
-        funds: vec![],
-    }
-    .into();
-
+    // For 1:1 exchange, LP amount equals deposit amount
     let lp_amount = amount;
 
-    let mint_msg = Cw20ExecuteMsg::Mint {
-        recipient: info.sender.to_string(),
-        amount: lp_amount,
-    };
-
-    let mint_cosmos_msg: CosmosMsg = WasmMsg::Execute {
-        contract_addr: config.lp_token_address.to_string(),
-        msg: to_json_binary(&mint_msg)?,
-        funds: vec![],
-    }
-    .into();
-
+    // Update pool state
+    let mut pool_state = POOL_STATE.load(deps.storage)?;
     pool_state.total_stablecoin_deposited = pool_state
         .total_stablecoin_deposited
         .checked_add(amount)
-        .map_err(|_| StdError::generic_err("Overflow in deposit"))?;
-    
+        .map_err(|_| ContractError::OverflowError {
+            operation: "deposit".to_string(),
+        })?;
+
     pool_state.total_lp_minted = pool_state
         .total_lp_minted
         .checked_add(lp_amount)
-        .map_err(|_| StdError::generic_err("Overflow in LP mint"))?;
+        .map_err(|_| ContractError::OverflowError {
+            operation: "LP mint".to_string(),
+        })?;
 
     POOL_STATE.save(deps.storage, &pool_state)?;
 
+    // Mint LP tokens to the user via TokenFactory
+    let mint_msg = mint_and_send_tokens_msg(
+        env.contract.address.to_string(),
+        config.lp_full_denom.clone(),
+        lp_amount.to_string(),
+        info.sender.to_string(),
+    )?;
+
     Ok(Response::new()
-        .add_message(transfer_cosmos_msg)
-        .add_message(mint_cosmos_msg)
+        .add_message(mint_msg)
         .add_attribute("method", "deposit")
         .add_attribute("user", info.sender)
         .add_attribute("stablecoin_amount", amount)
@@ -135,83 +166,66 @@ fn execute_withdraw(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
-    lp_amount: Uint128,
 ) -> Result<Response, ContractError> {
+    let config = CONFIG.load(deps.storage)?;
+
+    // Find and validate the LP tokens sent
+    let lp_sent = info
+        .funds
+        .iter()
+        .find(|coin| coin.denom == config.lp_full_denom)
+        .ok_or(ContractError::NoLpTokensSent {})?;
+
+    let lp_amount = lp_sent.amount;
     if lp_amount.is_zero() {
         return Err(ContractError::InvalidZeroAmount {});
     }
 
-    let config = CONFIG.load(deps.storage)?;
-    let mut pool_state = POOL_STATE.load(deps.storage)?;
-
-    let lp_balance = query_cw20_balance(
-        deps.as_ref(),
-        &config.lp_token_address,
-        &info.sender,
-    )?;
-
-    if lp_balance < lp_amount {
-        return Err(ContractError::InsufficientLpBalance {});
-    }
-
+    // For 1:1 exchange, stablecoin amount equals LP amount
     let stablecoin_amount = lp_amount;
+
+    // Update pool state
+    let mut pool_state = POOL_STATE.load(deps.storage)?;
 
     if pool_state.total_stablecoin_deposited < stablecoin_amount {
         return Err(ContractError::InsufficientPoolBalance {});
     }
 
-    let transfer_lp_msg = Cw20ExecuteMsg::TransferFrom {
-        owner: info.sender.to_string(),
-        recipient: env.contract.address.to_string(),
-        amount: lp_amount,
-    };
-
-    let transfer_lp_cosmos_msg: CosmosMsg = WasmMsg::Execute {
-        contract_addr: config.lp_token_address.to_string(),
-        msg: to_json_binary(&transfer_lp_msg)?,
-        funds: vec![],
-    }
-    .into();
-
-    let burn_msg = Cw20ExecuteMsg::Burn {
-        amount: lp_amount,
-    };
-
-    let burn_cosmos_msg: CosmosMsg = WasmMsg::Execute {
-        contract_addr: config.lp_token_address.to_string(),
-        msg: to_json_binary(&burn_msg)?,
-        funds: vec![],
-    }
-    .into();
-
-    let transfer_msg = Cw20ExecuteMsg::Transfer {
-        recipient: info.sender.to_string(),
-        amount: stablecoin_amount,
-    };
-
-    let transfer_cosmos_msg: CosmosMsg = WasmMsg::Execute {
-        contract_addr: config.stablecoin_address.to_string(),
-        msg: to_json_binary(&transfer_msg)?,
-        funds: vec![],
-    }
-    .into();
-
     pool_state.total_stablecoin_deposited = pool_state
         .total_stablecoin_deposited
         .checked_sub(stablecoin_amount)
-        .map_err(|_| StdError::generic_err("Underflow in withdrawal"))?;
-    
+        .map_err(|_| ContractError::OverflowError {
+            operation: "withdrawal".to_string(),
+        })?;
+
     pool_state.total_lp_minted = pool_state
         .total_lp_minted
         .checked_sub(lp_amount)
-        .map_err(|_| StdError::generic_err("Underflow in LP burn"))?;
+        .map_err(|_| ContractError::OverflowError {
+            operation: "LP burn".to_string(),
+        })?;
 
     POOL_STATE.save(deps.storage, &pool_state)?;
 
+    // Burn LP tokens via TokenFactory
+    let burn_msg = burn_tokens_msg(
+        env.contract.address.to_string(),
+        config.lp_full_denom.clone(),
+        lp_amount.to_string(),
+    )?;
+
+    // Return stablecoin to user via Bank module
+    let return_msg = BankMsg::Send {
+        to_address: info.sender.to_string(),
+        amount: vec![Coin {
+            denom: config.stablecoin_denom.clone(),
+            amount: stablecoin_amount,
+        }],
+    };
+
     Ok(Response::new()
-        .add_message(transfer_lp_cosmos_msg)
-        .add_message(burn_cosmos_msg)
-        .add_message(transfer_cosmos_msg)
+        .add_message(burn_msg)
+        .add_message(return_msg)
         .add_attribute("method", "withdraw")
         .add_attribute("user", info.sender)
         .add_attribute("lp_amount", lp_amount)
@@ -221,8 +235,7 @@ fn execute_withdraw(
 fn execute_update_config(
     deps: DepsMut,
     info: MessageInfo,
-    stablecoin_address: Option<String>,
-    lp_token_address: Option<String>,
+    stablecoin_denom: Option<String>,
     admin: Option<String>,
 ) -> Result<Response, ContractError> {
     let mut config = CONFIG.load(deps.storage)?;
@@ -231,12 +244,8 @@ fn execute_update_config(
         return Err(ContractError::Unauthorized {});
     }
 
-    if let Some(addr) = stablecoin_address {
-        config.stablecoin_address = deps.api.addr_validate(&addr)?;
-    }
-
-    if let Some(addr) = lp_token_address {
-        config.lp_token_address = deps.api.addr_validate(&addr)?;
+    if let Some(denom) = stablecoin_denom {
+        config.stablecoin_denom = denom;
     }
 
     if let Some(addr) = admin {
@@ -262,15 +271,15 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
 fn query_config(deps: Deps) -> StdResult<ConfigResponse> {
     let config = CONFIG.load(deps.storage)?;
     Ok(ConfigResponse {
-        stablecoin_address: config.stablecoin_address,
-        lp_token_address: config.lp_token_address,
+        stablecoin_denom: config.stablecoin_denom,
+        lp_full_denom: config.lp_full_denom,
         admin: config.admin,
     })
 }
 
 fn query_pool_info(deps: Deps) -> StdResult<PoolInfoResponse> {
     let pool_state = POOL_STATE.load(deps.storage)?;
-    
+
     let exchange_rate = if pool_state.total_lp_minted.is_zero() {
         "1.0".to_string()
     } else {
@@ -290,7 +299,10 @@ fn query_user_info(deps: Deps, address: String) -> StdResult<UserInfoResponse> {
     let config = CONFIG.load(deps.storage)?;
     let user_addr = deps.api.addr_validate(&address)?;
 
-    let lp_balance = query_cw20_balance(deps, &config.lp_token_address, &user_addr)?;
+    // Query LP balance from bank module
+    let lp_balance = query_bank_balance(&deps.querier, &user_addr, &config.lp_full_denom)?;
+
+    // For 1:1 exchange, stablecoin value equals LP balance
     let stablecoin_value = lp_balance;
 
     Ok(UserInfoResponse {
@@ -300,17 +312,14 @@ fn query_user_info(deps: Deps, address: String) -> StdResult<UserInfoResponse> {
     })
 }
 
-fn query_cw20_balance(deps: Deps, token_addr: &Addr, user_addr: &Addr) -> StdResult<Uint128> {
-    let balance_query = Cw20QueryMsg::Balance {
-        address: user_addr.to_string(),
-    };
-
-    let balance_response: BalanceResponse = deps.querier.query_wasm_smart(
-        token_addr.to_string(),
-        &balance_query,
-    )?;
-
-    Ok(balance_response.balance)
+/// Query balance from bank module
+fn query_bank_balance(
+    querier: &QuerierWrapper,
+    address: &Addr,
+    denom: &str,
+) -> StdResult<Uint128> {
+    let balance = querier.query_balance(address, denom)?;
+    Ok(balance.amount)
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -328,41 +337,75 @@ mod tests {
     fn proper_initialization() {
         let mut deps = mock_dependencies();
         let msg = InstantiateMsg {
-            stablecoin_address: "stable_token".to_string(),
-            lp_token_address: "lp_token".to_string(),
+            stablecoin_denom: "uzig".to_string(),
+            lp_subdenom: "lplp".to_string(),
+            lp_minting_cap: Uint128::new(1_000_000_000),
+            can_change_minting_cap: Some(false),
+            uri: None,
+            uri_hash: None,
+            description: Some("LP Token for Liquidity Pool".to_string()),
             admin: None,
         };
-        let info = mock_info("creator", &coins(1000, "uzig"));
+        let info = mock_info("creator", &[]);
         let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-        assert_eq!(0, res.messages.len());
+        assert_eq!(1, res.messages.len());
 
-        // Query config
         let res = query(deps.as_ref(), mock_env(), QueryMsg::Config {}).unwrap();
         let config: ConfigResponse = from_json(&res).unwrap();
-        assert_eq!("stable_token", config.stablecoin_address);
-        assert_eq!("lp_token", config.lp_token_address);
+        assert_eq!("uzig", config.stablecoin_denom);
+        assert!(config.lp_full_denom.contains("lplp"));
         assert_eq!("creator", config.admin);
     }
 
     #[test]
-    fn test_zero_amount_deposit() {
+    fn test_invalid_subdenom() {
         let mut deps = mock_dependencies();
+
+        // Too short
         let msg = InstantiateMsg {
-            stablecoin_address: "stable_token".to_string(),
-            lp_token_address: "lp_token".to_string(),
+            stablecoin_denom: "uzig".to_string(),
+            lp_subdenom: "ab".to_string(),
+            lp_minting_cap: Uint128::new(1_000_000),
+            can_change_minting_cap: None,
+            uri: None,
+            uri_hash: None,
+            description: None,
             admin: None,
         };
         let info = mock_info("creator", &[]);
-        instantiate(deps.as_mut(), mock_env(), info.clone(), msg).unwrap();
+        let err = instantiate(deps.as_mut(), mock_env(), info.clone(), msg).unwrap_err();
+        assert!(matches!(err, ContractError::InvalidSubdenom { .. }));
 
-        // Try to deposit zero amount
-        let deposit_msg = ExecuteMsg::Deposit {
-            amount: Uint128::zero(),
+        // Doesn't start with lowercase
+        let msg = InstantiateMsg {
+            stablecoin_denom: "uzig".to_string(),
+            lp_subdenom: "ABC".to_string(),
+            lp_minting_cap: Uint128::new(1_000_000),
+            can_change_minting_cap: None,
+            uri: None,
+            uri_hash: None,
+            description: None,
+            admin: None,
         };
-        let err = execute(deps.as_mut(), mock_env(), info, deposit_msg).unwrap_err();
-        match err {
-            ContractError::InvalidZeroAmount {} => {}
-            _ => panic!("Expected InvalidZeroAmount error"),
-        }
+        let err = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap_err();
+        assert!(matches!(err, ContractError::InvalidSubdenom { .. }));
+    }
+
+    #[test]
+    fn test_zero_minting_cap() {
+        let mut deps = mock_dependencies();
+        let msg = InstantiateMsg {
+            stablecoin_denom: "uzig".to_string(),
+            lp_subdenom: "lplp".to_string(),
+            lp_minting_cap: Uint128::zero(),
+            can_change_minting_cap: None,
+            uri: None,
+            uri_hash: None,
+            description: None,
+            admin: None,
+        };
+        let info = mock_info("creator", &[]);
+        let err = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap_err();
+        assert!(matches!(err, ContractError::InvalidMintingCap {}));
     }
 }

@@ -1,0 +1,27 @@
+# Build results
+/target
+/schema
+
+# Cargo+Git helper file
+.cargo-ok
+
+# Text file backups
+**/*.rs.bk
+
+# macOS
+.DS_Store
+
+# IDEs
+*.iml
+.idea
+.vscode/
+
+# Deployment artifacts
+# scripts/contract_addresses.txt
+# artifacts/cw20_base.wasm
+*.json
+!package.json
+
+# Test outputs
+test_output/
+*.log

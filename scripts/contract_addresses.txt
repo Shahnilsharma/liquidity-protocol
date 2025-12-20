@@ -1,0 +1,16 @@
+# LP Pool Contract Deployment
+# Date: Sat Dec 20 21:29:03 PKT 2025
+
+STABLECOIN_ADDRESS=zig1nxpwgm6emumrcpusgmqpx7evh4kx7xvhwm2ckp632qu6rekf0dfs3m0vzm
+LP_TOKEN_ADDRESS=zig18cmpmjvzxqakk40fln26dwzeyqm0ey33vura5put80ft94fm9w9sj9vaq2
+LP_POOL_ADDRESS=zig1h0eausq342tmg4yvpzy7w8jzwf0256d26ejsez5sla7xjv7mdn2q4knjn3
+
+# Code IDs
+STABLECOIN_CODE_ID=1608
+LP_TOKEN_CODE_ID=1609
+LP_POOL_CODE_ID=1610
+
+# Configuration
+WALLET_ADDRESS=zig1ug335mpcdn2vpk8p08v4k9z7cqtdg0jj4tqr92
+NODE=https://public-zigchain-testnet-rpc.numia.xyz/
+CHAIN_ID=zig-test-2

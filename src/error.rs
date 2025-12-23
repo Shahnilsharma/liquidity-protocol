@@ -1,7 +1,7 @@
 use cosmwasm_std::StdError;
 use thiserror::Error;
 
-/// Custom errors for the LP pool contract
+/// Custom errors for the token vault contract
 #[derive(Error, Debug)]
 pub enum ContractError {
     #[error("{0}")]
@@ -16,8 +16,8 @@ pub enum ContractError {
     #[error("Insufficient LP balance - user does not have enough LP tokens to withdraw")]
     InsufficientLpBalance {},
 
-    #[error("Insufficient pool balance - pool does not have enough stablecoins")]
-    InsufficientPoolBalance {},
+    #[error("Insufficient vault balance - vault does not have enough stablecoins")]
+    InsufficientVaultBalance {},
 
     #[error("Invalid subdenom - {reason}")]
     InvalidSubdenom { reason: String },
@@ -37,6 +37,6 @@ pub enum ContractError {
     #[error("Invalid address - {0}")]
     InvalidAddress(String),
 
-    #[error("Pool state inconsistent - total deposited does not match LP supply")]
-    InconsistentPoolState {},
+    #[error("Vault state inconsistent - total deposited does not match LP supply")]
+    InconsistentVaultState {},
 }

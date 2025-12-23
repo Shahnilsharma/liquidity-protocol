@@ -48,9 +48,9 @@ pub enum QueryMsg {
     #[returns(ConfigResponse)]
     Config {},
     
-    /// Get pool information (total deposits, LP supply, etc.)
-    #[returns(PoolInfoResponse)]
-    PoolInfo {},
+    /// Get vault information (total deposits, LP supply, etc.)
+    #[returns(VaultInfoResponse)]
+    VaultInfo {},
     
     /// Get user's deposit information
     #[returns(UserInfoResponse)]
@@ -71,15 +71,13 @@ pub struct ConfigResponse {
     pub admin: Addr,
 }
 
-/// Response for PoolInfo query
+/// Response for VaultInfo query
 #[cw_serde]
-pub struct PoolInfoResponse {
-    /// Total stablecoins deposited in the pool
+pub struct VaultInfoResponse {
+    /// Total stablecoins deposited in the vault
     pub total_stablecoin_deposited: Uint128,
     /// Total LP tokens in circulation
     pub total_lp_supply: Uint128,
-    /// Exchange rate (stablecoin per LP token)
-    pub exchange_rate: String,
 }
 
 /// Response for UserInfo query

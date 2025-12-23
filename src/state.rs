@@ -14,17 +14,17 @@ pub struct Config {
     pub admin: Addr,
 }
 
-/// Pool statistics
+/// Vault statistics
 #[cw_serde]
-pub struct PoolState {
-    /// Total amount of stablecoins deposited in the pool
+pub struct VaultState {
+    /// Total amount of stablecoins deposited in the vault
     pub total_stablecoin_deposited: cosmwasm_std::Uint128,
     /// Total LP tokens minted
     pub total_lp_minted: cosmwasm_std::Uint128,
 }
 
 pub const CONFIG: Item<Config> = Item::new("config");
-pub const POOL_STATE: Item<PoolState> = Item::new("pool_state");
+pub const VAULT_STATE: Item<VaultState> = Item::new("vault_state");
 
-pub const CONTRACT_NAME: &str = "crates.io:lp-pool-tokenfactory";
+pub const CONTRACT_NAME: &str = "crates.io:token-vault";
 pub const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");

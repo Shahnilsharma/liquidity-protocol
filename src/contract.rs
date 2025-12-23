@@ -7,10 +7,10 @@ use cw2::set_contract_version;
 use crate::custom::{burn_tokens_msg, create_denom_msg, mint_and_send_tokens_msg};
 use crate::error::ContractError;
 use crate::msg::{
-    ConfigResponse, ExecuteMsg, InstantiateMsg, MigrateMsg, PoolInfoResponse, QueryMsg,
+    ConfigResponse, ExecuteMsg, InstantiateMsg, MigrateMsg, VaultInfoResponse, QueryMsg,
     UserInfoResponse,
 };
-use crate::state::{Config, PoolState, CONFIG, CONTRACT_NAME, CONTRACT_VERSION, POOL_STATE};
+use crate::state::{Config, VaultState, CONFIG, CONTRACT_NAME, CONTRACT_VERSION, VAULT_STATE};
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn instantiate(
@@ -59,12 +59,12 @@ pub fn instantiate(
     };
     CONFIG.save(deps.storage, &config)?;
 
-    // Initialize pool state
-    let pool_state = PoolState {
+    // Initialize vault state
+    let vault_state = VaultState {
         total_stablecoin_deposited: Uint128::zero(),
         total_lp_minted: Uint128::zero(),
     };
-    POOL_STATE.save(deps.storage, &pool_state)?;
+    VAULT_STATE.save(deps.storage, &vault_state)?;
 
     // Set contract version
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
@@ -128,23 +128,23 @@ fn execute_deposit(
     // For 1:1 exchange, LP amount equals deposit amount
     let lp_amount = amount;
 
-    // Update pool state
-    let mut pool_state = POOL_STATE.load(deps.storage)?;
-    pool_state.total_stablecoin_deposited = pool_state
+    // Update vault state
+    let mut vault_state = VAULT_STATE.load(deps.storage)?;
+    vault_state.total_stablecoin_deposited = vault_state
         .total_stablecoin_deposited
         .checked_add(amount)
         .map_err(|_| ContractError::OverflowError {
             operation: "deposit".to_string(),
         })?;
 
-    pool_state.total_lp_minted = pool_state
+    vault_state.total_lp_minted = vault_state
         .total_lp_minted
         .checked_add(lp_amount)
         .map_err(|_| ContractError::OverflowError {
             operation: "LP mint".to_string(),
         })?;
 
-    POOL_STATE.save(deps.storage, &pool_state)?;
+    VAULT_STATE.save(deps.storage, &vault_state)?;
 
     // Mint LP tokens to the user via TokenFactory
     let mint_msg = mint_and_send_tokens_msg(
@@ -184,28 +184,28 @@ fn execute_withdraw(
     // For 1:1 exchange, stablecoin amount equals LP amount
     let stablecoin_amount = lp_amount;
 
-    // Update pool state
-    let mut pool_state = POOL_STATE.load(deps.storage)?;
+    // Update vault state
+    let mut vault_state = VAULT_STATE.load(deps.storage)?;
 
-    if pool_state.total_stablecoin_deposited < stablecoin_amount {
-        return Err(ContractError::InsufficientPoolBalance {});
+    if vault_state.total_stablecoin_deposited < stablecoin_amount {
+        return Err(ContractError::InsufficientVaultBalance {});
     }
 
-    pool_state.total_stablecoin_deposited = pool_state
+    vault_state.total_stablecoin_deposited = vault_state
         .total_stablecoin_deposited
         .checked_sub(stablecoin_amount)
         .map_err(|_| ContractError::OverflowError {
             operation: "withdrawal".to_string(),
         })?;
 
-    pool_state.total_lp_minted = pool_state
+    vault_state.total_lp_minted = vault_state
         .total_lp_minted
         .checked_sub(lp_amount)
         .map_err(|_| ContractError::OverflowError {
             operation: "LP burn".to_string(),
         })?;
 
-    POOL_STATE.save(deps.storage, &pool_state)?;
+    VAULT_STATE.save(deps.storage, &vault_state)?;
 
     // Burn LP tokens via TokenFactory
     let burn_msg = burn_tokens_msg(
@@ -263,7 +263,7 @@ fn execute_update_config(
 pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
         QueryMsg::Config {} => to_json_binary(&query_config(deps)?),
-        QueryMsg::PoolInfo {} => to_json_binary(&query_pool_info(deps)?),
+        QueryMsg::VaultInfo {} => to_json_binary(&query_vault_info(deps)?),
         QueryMsg::UserInfo { address } => to_json_binary(&query_user_info(deps, address)?),
     }
 }
@@ -277,21 +277,12 @@ fn query_config(deps: Deps) -> StdResult<ConfigResponse> {
     })
 }
 
-fn query_pool_info(deps: Deps) -> StdResult<PoolInfoResponse> {
-    let pool_state = POOL_STATE.load(deps.storage)?;
+fn query_vault_info(deps: Deps) -> StdResult<VaultInfoResponse> {
+    let vault_state = VAULT_STATE.load(deps.storage)?;
 
-    let exchange_rate = if pool_state.total_lp_minted.is_zero() {
-        "1.0".to_string()
-    } else {
-        let rate = pool_state.total_stablecoin_deposited.u128() as f64
-            / pool_state.total_lp_minted.u128() as f64;
-        format!("{:.6}", rate)
-    };
-
-    Ok(PoolInfoResponse {
-        total_stablecoin_deposited: pool_state.total_stablecoin_deposited,
-        total_lp_supply: pool_state.total_lp_minted,
-        exchange_rate,
+    Ok(VaultInfoResponse {
+        total_stablecoin_deposited: vault_state.total_stablecoin_deposited,
+        total_lp_supply: vault_state.total_lp_minted,
     })
 }
 

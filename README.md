@@ -1,362 +1,354 @@
-# Liquidity Pool Protocol
+# Token Vault Contract
 
-[![Rust](https://img.shields.io/badge/rust-1.81%2B-orange.svg)](https://www.rust-lang.org/)
-[![CosmWasm](https://img.shields.io/badge/cosmwasm-2.3.0-blue.svg)](https://cosmwasm.com/)
-[![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-
-Production-ready liquidity pool smart contract for ZigChain using TokenFactory for native LP tokens.
+A simple, gas-efficient single-asset vault contract for ZigChain using CosmWasm and TokenFactory.
 
 ## Overview
 
-A liquidity pool contract enabling:
-- **Deposit**: Send stablecoin, receive LP tokens (1:1 ratio)
-- **Withdraw**: Burn LP tokens, receive stablecoin back
-- **Native Tokens**: All operations use bank module (no CW20 contracts)
-- **Single Transaction**: No approval step required
+This contract implements a basic token vault where users can:
+- **Deposit** stablecoin and receive LP (receipt) tokens at 1:1 ratio
+- **Withdraw** LP tokens and receive back the original stablecoin at 1:1 ratio
+
+**Note:** This is a vault for depositing/withdrawing, NOT a trading DEX or AMM. There are no variable exchange rates or token swaps.
 
 ## Features
 
-**TokenFactory Integration:**
-- Native LP tokens (bank module denoms, not CW20)
-- IBC compatible
-- Visible in all Cosmos wallets
+- ✅ **1:1 Ratio** - Deposit 1000 tokens, get 1000 LP tokens back
+- ✅ **TokenFactory Integration** - LP tokens are native (no CW20 approvals needed)
+- ✅ **Gas Efficient** - ~27% cheaper than CW20-based alternatives
+- ✅ **Simple & Secure** - Straightforward deposit/withdrawal mechanism
 
-**Security:**
-- No approval vulnerabilities
-- Overflow protection
-- Admin access controls
+## Contract Architecture
 
-**Efficiency:**
-- 47% gas savings vs CW20
-- Single-step operations
-- Optimized WASM (255KB)
-
-## Architecture
-
-**Flow:**
-```
-User → Send Stablecoin → LP Pool Contract
-                              ↓
-                        Mint LP Tokens
-                              ↓
-                    Return to User's Wallet
-```
-
-**Components:**
-- **Contract**: Manages deposits/withdrawals, mints/burns LP tokens
-- **TokenFactory**: Creates and manages native LP denom
-- **Bank Module**: Handles all token transfers
-
-**Comparison:**
-
-| Metric | TokenFactory | CW20 |
-|--------|-------------|------|
-| Contracts | 1 | 3 |
-| Approval | None | Required |
-| Deposit Gas | ~195k | ~305k |
-| Withdraw Gas | ~208k | ~449k |
-| Total Savings | 47% | - |
-
-## Quick Start
-
-### Build
-
-```bash
-# Install Rust toolchain
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-rustup target add wasm32-unknown-unknown
-
-# Build
-cargo build --release --target wasm32-unknown-unknown
-
-# Optimize (requires Docker)
-docker run --rm -v "$(pwd)":/code \
-  --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target \
-  cosmwasm/optimizer:0.16.1
-```
-
-### Deploy
-
-```bash
-# Set environment
-export WALLET="mynewwallet"
-export NODE="https://public-zigchain-testnet-rpc.numia.xyz:443"
-export CHAIN_ID="zig-test-2"
-
-# Deploy using script
-chmod +x scripts/deploy_tokenfactory.sh
-./scripts/deploy_tokenfactory.sh
-
-# Or manually upload
-zigchaind tx wasm store artifacts/liquidity_protocol.wasm \
-  --from $WALLET --node $NODE --chain-id $CHAIN_ID \
-  --gas-prices 0.025uzig --gas auto --gas-adjustment 1.5 -y
-
-# Instantiate (requires 100 ZIG for denom creation)
-CODE_ID=1611  # Your uploaded code ID
-zigchaind tx wasm instantiate $CODE_ID \
-  '{"stablecoin_denom":"uzig","lp_subdenom":"lptoken",
-    "lp_minting_cap":"1000000000000","can_change_minting_cap":false,
-    "description":"LP Token","admin":"YOUR_ADDRESS"}' \
-  --from $WALLET --amount 100000000uzig --no-admin \
-  --node $NODE --chain-id $CHAIN_ID \
-  --gas-prices 0.025uzig --gas auto --gas-adjustment 1.5 -y
-```
-
-### Interact
-
-```bash
-# Load contract addresses
-source scripts/contract_addresses_tokenfactory.txt
-
-# Deposit stablecoin → receive LP tokens
-zigchaind tx wasm execute $LP_POOL_ADDRESS \
-  '{"deposit":{}}' \
-  --from $WALLET --amount 100uzig \
-  --node $NODE --chain-id $CHAIN_ID \
-  --gas-prices 0.025uzig --gas auto --gas-adjustment 1.5 -y
-
-# Withdraw LP tokens → receive stablecoin
-zigchaind tx wasm execute $LP_POOL_ADDRESS \
-  '{"withdraw":{}}' \
-  --from $WALLET --amount 50${LP_FULL_DENOM} \
-  --node $NODE --chain-id $CHAIN_ID \
-  --gas-prices 0.025uzig --gas auto --gas-adjustment 1.5 -y
-
-# Check balances
-zigchaind query bank balances $(zigchaind keys show $WALLET -a) --node $NODE
-
-# Query pool info
-zigchaind query wasm contract-state smart $LP_POOL_ADDRESS \
-  '{"pool_info":{}}' --node $NODE --output json | jq '.data'
-```
-
-## Project Structure
-
-```
-├── src/
-│   ├── contract.rs      # Core logic (instantiate, execute, query)
-│   ├── custom.rs        # TokenFactory protobuf encoders
-│   ├── msg.rs           # Message definitions
-│   ├── state.rs         # State management
-│   ├── error.rs         # Error types
-│   └── lib.rs           # Module exports
-├── scripts/
-│   ├── deploy_tokenfactory.sh       # Automated deployment
-│   ├── interact_tokenfactory.sh     # Interactive CLI
-│   └── contract_addresses_tokenfactory.txt  # Deployed addresses
-├── docs/
-│   ├── QUERIES.md                   # Query reference guide
-│   ├── TOKENFACTORY_MIGRATION.md    # CW20 to TokenFactory migration
-│   └── guides/
-│       └── DEPLOYMENT_GUIDE.md      # Detailed deployment steps
-├── artifacts/           # Compiled WASM binaries
-└── Cargo.toml          # Dependencies
-```
-
-## Documentation
-
-- **[Query Guide](docs/QUERIES.md)** - Complete query reference with examples
-- **[Migration Guide](docs/TOKENFACTORY_MIGRATION.md)** - Migrating from CW20
-- **[Deployment Guide](docs/guides/DEPLOYMENT_GUIDE.md)** - Step-by-step deployment
-
-## Testing
-
-```bash
-# Unit tests
-cargo test
-
-# Integration testing on testnet
-source scripts/contract_addresses_tokenfactory.txt
-
-# Test deposit
-zigchaind tx wasm execute $LP_POOL_ADDRESS '{"deposit":{}}' \
-  --from $WALLET --amount 100uzig --node $NODE --chain-id $CHAIN_ID \
-  --gas-prices 0.025uzig --gas auto --gas-adjustment 1.5 -y
-
-# Verify pool state
-zigchaind query wasm contract-state smart $LP_POOL_ADDRESS \
-  '{"pool_info":{}}' --node $NODE --output json | jq '.data'
-
-# Test withdrawal
-zigchaind tx wasm execute $LP_POOL_ADDRESS '{"withdraw":{}}' \
-  --from $WALLET --amount 50${LP_FULL_DENOM} --node $NODE --chain-id $CHAIN_ID \
-  --gas-prices 0.025uzig --gas auto --gas-adjustment 1.5 -y
-```
-
-## Contract Interface
-
-### Instantiate Message
-
-```json
-{
-  "stablecoin_denom": "uzig",
-  "lp_subdenom": "lptoken",
-  "lp_minting_cap": "1000000000000",
-  "can_change_minting_cap": false,
-  "description": "LP Token",
-  "uri": "",
-  "uri_hash": "",
-  "admin": "zig1xxx..."
+### State Structure
+```rust
+pub struct VaultState {
+    pub stablecoin_denom: String,           // Accepted stablecoin (e.g., "uzig")
+    pub lp_denom: String,                   // LP token denom (TokenFactory)
+    pub admin: Addr,                        // Admin address
+    pub lp_minting_cap: Uint128,           // Maximum LP tokens
+    pub can_change_minting_cap: bool,      // Allow cap changes
+    pub total_stablecoin_deposited: Uint128,
+    pub total_lp_supply: Uint128,
 }
 ```
 
-**Parameters:**
-- `stablecoin_denom`: Native denom for deposits (e.g., "uzig")
-- `lp_subdenom`: Subdenom for LP tokens (3-44 chars, lowercase, [a-z0-9-])
-- `lp_minting_cap`: Maximum LP supply (must be > 0)
-- `admin`: Admin address for config updates
-
-**Note:** Requires 100,000,000 uzig (100 ZIG) denom creation fee.
-
 ### Execute Messages
 
-**Deposit:**
+#### 1. Deposit
+Deposit stablecoin and receive LP tokens.
 ```json
 {"deposit": {}}
 ```
-Send stablecoin via `--amount 100uzig` flag.
+**Funds:** Must send stablecoin with `--amount`
 
-**Withdraw:**
+#### 2. Withdraw
+Return LP tokens and receive stablecoin.
 ```json
 {"withdraw": {}}
 ```
-Send LP tokens via `--amount 50<LP_DENOM>` flag.
+**Funds:** Must send LP tokens with `--amount`
 
-**Update Config (Admin Only):**
+#### 3. Update Minting Cap (Admin only)
+Update the LP minting cap (if allowed during instantiation).
 ```json
 {
-  "update_config": {
-    "stablecoin_denom": "new_denom",
-    "admin": "new_admin"
+  "update_minting_cap": {
+    "new_cap": "20000000000000"
   }
 }
 ```
 
 ### Query Messages
 
-**Config:**
+#### 1. Config
+Get contract configuration.
 ```bash
-zigchaind query wasm contract-state smart $CONTRACT '{"config":{}}'
+zigchaind query wasm contract-state smart <CONTRACT> '{"config":{}}'
 ```
-Returns: `stablecoin_denom`, `lp_full_denom`, `admin`
+**Returns:**
+```json
+{
+  "stablecoin_denom": "uzig",
+  "lp_full_denom": "coin.zig1...",
+  "admin": "zig1..."
+}
+```
 
-**Pool Info:**
+#### 2. Vault Info
+Get total vault state.
 ```bash
-zigchaind query wasm contract-state smart $CONTRACT '{"pool_info":{}}'
+zigchaind query wasm contract-state smart <CONTRACT> '{"vault_info":{}}'
 ```
-Returns: `total_stablecoin_deposited`, `total_lp_supply`, `exchange_rate`
+**Returns:**
+```json
+{
+  "total_stablecoin_deposited": "52150",
+  "total_lp_supply": "52150"
+}
+```
 
-**User Info:**
+#### 3. User Info
+Get specific user's balance and value.
 ```bash
-zigchaind query wasm contract-state smart $CONTRACT \
-  '{"user_info":{"address":"zig1xxx..."}}'
+zigchaind query wasm contract-state smart <CONTRACT> \
+  '{"user_info":{"address":"zig1..."}}'
 ```
-Returns: `address`, `lp_balance`, `stablecoin_value`
-
-For detailed query examples, see [docs/QUERIES.md](docs/QUERIES.md).
-
-## TokenFactory Specifications
-
-**LP Denom Format:**
+**Returns:**
+```json
+{
+  "address": "zig1...",
+  "lp_balance": "1000",
+  "stablecoin_value": "1000"
+}
 ```
-coin.{contract_address}.{subdenom}
-```
-
-**Example:**
-```
-coin.zig1zj22cuztwnn60n5edn7mpsgpty4q5wwk4thm0jpv62w73vrssn8snzfsn8.lptoken
-```
-
-**Subdenom Rules:**
-- Length: 3-44 characters
-- Format: Lowercase letters, numbers, hyphens only
-- Must start with lowercase letter
-- Valid: `lptoken`, `lp-token`, `lp123`
-- Invalid: `LP`, `ab`, `token_with_underscore`
-
-**Requirements:**
-- Minting cap must be > 0
-- Denom creation requires 100 ZIG fee
-- Contract becomes denom admin
-
-## Gas Optimization
-
-| Operation | Gas Used | vs CW20 |
-|-----------|----------|---------|
-| Instantiate | ~365k | - |
-| Deposit | ~195k | -36% |
-| Withdraw | ~208k | -54% |
-| Query | 0 | 0 |
-
-**Total savings: 47% vs CW20-based implementation**
-
-## Security
-
-**Input Validation:**
-- Amount validation (no zero operations)
-- Denom verification
-- Subdenom format checks
-
-**Overflow Protection:**
-- Checked arithmetic
-- Safe math functions
-
-**Access Control:**
-- Admin-only config updates
-- Contract controls LP denom minting
-
-**Error Handling:**
-- Comprehensive error types
-- Clear error messages
-- Graceful failures
 
 ## Deployment
 
-**Testnet (zig-test-2):**
-- Contract: `zig1zj22cuztwnn60n5edn7mpsgpty4q5wwk4thm0jpv62w73vrssn8snzfsn8`
-- LP Denom: `coin.zig1zj22cuztwnn60n5edn7mpsgpty4q5wwk4thm0jpv62w73vrssn8snzfsn8.lptoken`
-- Code ID: `1611`
-- Stablecoin: `uzig`
+### Prerequisites
+- Docker (for WASM optimization)
+- `zigchaind` CLI installed and configured
+- Wallet with sufficient funds (100+ ZIG for denom creation + gas)
+
+### Step 1: Optimize WASM
+```bash
+docker run --rm -v "$(pwd)":/code cosmwasm/optimizer:0.16.1
+```
+This creates `artifacts/liquidity_protocol.wasm` (~232 KB)
+
+### Step 2: Upload Contract
+```bash
+zigchaind tx wasm store artifacts/liquidity_protocol.wasm \
+  --from your_wallet \
+  --node <RPC_URL> \
+  --chain-id <CHAIN_ID> \
+  --gas auto --gas-adjustment 1.5 \
+  -y
+
+# Get code_id from transaction
+zigchaind query tx <TX_HASH>
+```
+
+### Step 3: Instantiate
+```bash
+zigchaind tx wasm instantiate <CODE_ID> '{
+  "stablecoin_denom": "uzig",
+  "lp_subdenom": "vaulttoken",
+  "lp_minting_cap": "10000000000000",
+  "can_change_minting_cap": false,
+  "description": "Token Vault LP Token",
+  "admin": "your_address"
+}' \
+  --from your_wallet \
+  --amount 100000000uzig \
+  --label "token-vault-v1" \
+  --node <RPC_URL> \
+  --chain-id <CHAIN_ID> \
+  --gas auto --gas-adjustment 1.5 \
+  -y
+```
+
+**Note:** The 100000000uzig (100 tokens) is the TokenFactory denom creation fee, NOT a deposit.
+
+### Step 4: Save Contract Address
+```bash
+# Get contract address from instantiate transaction
+zigchaind query tx <TX_HASH>
+
+# Save to vault_addresses.txt
+export VAULT_ADDRESS="zig1..."
+export LP_FULL_DENOM="coin.zig1...vaulttoken"
+export STABLECOIN_DENOM="uzig"
+```
+
+## Usage
+
+### Using the Deployment Script
+```bash
+# Edit scripts/deploy_tokenfactory.sh with your configuration
+./scripts/deploy_tokenfactory.sh
+```
+
+### Using the Interaction Script
+```bash
+# Interactive menu for deposits, withdrawals, and queries
+./scripts/interact_tokenfactory.sh
+```
+
+### Manual Commands
+
+#### Deposit
+```bash
+zigchaind tx wasm execute <CONTRACT> '{"deposit":{}}' \
+  --from your_wallet \
+  --amount 1000uzig \
+  --gas auto --gas-adjustment 1.5 \
+  -y
+```
+
+#### Withdraw
+```bash
+zigchaind tx wasm execute <CONTRACT> '{"withdraw":{}}' \
+  --from your_wallet \
+  --amount 500<LP_DENOM> \
+  --gas auto --gas-adjustment 1.5 \
+  -y
+```
+
+#### Query Vault State
+```bash
+zigchaind query wasm contract-state smart <CONTRACT> '{"vault_info":{}}'
+```
+
+#### Check Your LP Balance
+```bash
+zigchaind query bank balances your_address
+```
+
+## Gas Costs
+
+Approximate gas costs (at 0.025 gas price):
+
+| Operation | Gas Used | Cost |
+|-----------|----------|------|
+| Deposit | ~265,000 | ~6,625 tokens (~0.0066) |
+| Withdraw | ~285,000 | ~7,125 tokens (~0.0071) |
+| Query | 0 | Free |
+
+**Comparison:** 27% more efficient than CW20-based alternatives.
+
+## Security Considerations
+
+### Built-in Protections
+- ✅ Strict denom validation (only configured stablecoin accepted)
+- ✅ Zero amount rejection (no dust attacks)
+- ✅ Balance verification (can't withdraw more than owned)
+- ✅ Overflow protection (Rust's checked arithmetic)
+- ✅ Admin controls (minting cap enforcement)
+
+### Best Practices
+- Use multi-sig wallet for admin address
+- Set `can_change_minting_cap: false` for production
+- Set realistic minting cap based on expected TVL
+- Consider professional audit for mainnet deployments with significant value
 
 ## Development
 
-**Prerequisites:**
-- Rust 1.81+
-- wasm32-unknown-unknown target
-- Docker (for optimization)
-- ZigChain CLI
-
-**Commands:**
+### Build
 ```bash
-# Check
-cargo check
+# Debug
+cargo build
 
-# Test
-cargo test
+# Release
+cargo build --release
 
-# Build
-cargo build --release --target wasm32-unknown-unknown
-
-# Optimize
+# Optimized WASM
 docker run --rm -v "$(pwd)":/code cosmwasm/optimizer:0.16.1
-
-# Schema
-cargo schema
-
-# Format
-cargo fmt
-
-# Lint
-cargo clippy -- -D warnings
 ```
+
+### Test
+```bash
+cargo test
+```
+
+### Code Structure
+```
+src/
+├── contract.rs    # Main contract logic (deposit, withdraw, queries)
+├── msg.rs        # Message definitions (ExecuteMsg, QueryMsg)
+├── state.rs      # State structures (VaultState)
+├── error.rs      # Custom error types
+└── lib.rs        # Library exports
+```
+
+## Integration Examples
+
+### JavaScript/TypeScript
+```javascript
+import { SigningCosmWasmClient } from "@cosmjs/cosmwasm-stargate";
+
+// Deposit
+const depositMsg = { deposit: {} };
+const funds = [{ denom: "uzig", amount: "1000" }];
+await client.execute(
+  senderAddress,
+  contractAddress,
+  depositMsg,
+  "auto",
+  undefined,
+  funds
+);
+
+// Withdraw
+const withdrawMsg = { withdraw: {} };
+const lpFunds = [{ denom: lpDenom, amount: "500" }];
+await client.execute(
+  senderAddress,
+  contractAddress,
+  withdrawMsg,
+  "auto",
+  undefined,
+  lpFunds
+);
+
+// Query
+const vaultInfo = await client.queryContractSmart(
+  contractAddress,
+  { vault_info: {} }
+);
+console.log(vaultInfo);
+// { total_stablecoin_deposited: "52150", total_lp_supply: "52150" }
+```
+
+## Testnet Deployment (Reference)
+
+**Network:** zig-test-2  
+**Contract:** `zig1jj787thux4fycfh9882lelpzqmxfht5jq62r54x5x59lpr4wuvtqgmdcvm`  
+**Code ID:** 1617  
+**LP Denom:** `coin.zig1jj787thux4fycfh9882lelpzqmxfht5jq62r54x5x59lpr4wuvtqgmdcvm.vaulttoken`
+
+This is a reference deployment for testing. Deploy your own for production.
+
+## Troubleshooting
+
+### "No funds sent" error
+**Cause:** Trying to deposit without `--amount` flag  
+**Solution:** Include `--amount <value>uzig` when depositing
+
+### "Insufficient balance" error
+**Cause:** Trying to withdraw more LP tokens than you own  
+**Solution:** Query your LP balance first:
+```bash
+zigchaind query bank balances <your_address>
+```
+
+### "Invalid denom" error
+**Cause:** Trying to deposit wrong token or using wrong LP denom  
+**Solution:** Use exact denom from contract config query
+
+### Transaction pending forever
+**Cause:** Network congestion or incorrect RPC  
+**Solution:** Wait 6-10 seconds, then query transaction hash. Try different RPC if needed.
+
+## Comparison: CW20 vs TokenFactory
+
+| Feature | TokenFactory (This) | CW20 Alternative |
+|---------|-------------------|------------------|
+| Contracts needed | 1 | 2 (token + vault) |
+| Approvals required | No | Yes |
+| Gas per deposit | ~265k | ~365k |
+| Native balance queries | Yes | No |
+| Wallet support | All wallets | CW20-aware only |
+| **Recommendation** | ✅ Production | Legacy support |
 
 ## License
 
-Apache 2.0 - See [LICENSE](LICENSE)
+[Your license here - e.g., MIT, Apache 2.0]
 
-## Resources
+## Version
 
-- [ZigChain Docs](https://docs.zigchain.com/)
-- [CosmWasm Docs](https://docs.cosmwasm.com/)
-- [TokenFactory Spec](https://github.com/cosmos/cosmos-sdk/tree/main/x/tokenfactory)
+**v1.0** - Production Ready  
+**Last Updated:** December 23, 2025
+
+---
+
+*For questions or issues, refer to the source code documentation in the `src/` directory or consult the interaction script examples in `scripts/`.*

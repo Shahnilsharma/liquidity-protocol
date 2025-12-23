@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# ZigChain LP Pool - TokenFactory Edition Interaction Script
+# ZigChain Token Vault - TokenFactory Edition Interaction Script
 
 set -e
 
@@ -18,10 +18,10 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 # Load contract addresses
-if [ -f "scripts/contract_addresses.txt" ]; then
-    source scripts/contract_addresses.txt
+if [ -f "scripts/vault_addresses.txt" ]; then
+    source scripts/vault_addresses.txt
 else
-    echo "Error: scripts/contract_addresses.txt not found. Run deploy_tokenfactory.sh first."
+    echo "Error: scripts/vault_addresses.txt not found. Run deploy_tokenfactory.sh first."
     exit 1
 fi
 
@@ -29,7 +29,7 @@ fi
 MY_ADDR=$(zigchaind keys show $WALLET -a)
 
 echo -e "${BLUE}================================${NC}"
-echo -e "${BLUE}LP Pool TokenFactory Interaction${NC}"
+echo -e "${BLUE}Token Vault Interaction${NC}"
 echo -e "${BLUE}================================${NC}"
 echo ""
 echo -e "${GREEN}Wallet:${NC} $MY_ADDR"
@@ -44,7 +44,7 @@ while true; do
     echo "1) Deposit (send stablecoin, receive LP tokens)"
     echo "2) Withdraw (send LP tokens, receive stablecoin)"
     echo "3) Query config"
-    echo "4) Query pool info"
+    echo "4) Query vault info"
     echo "5) Query user info"
     echo "6) Check balances"
     echo "7) Exit"
@@ -113,9 +113,9 @@ while true; do
             ;;
             
         4)
-            echo -e "${YELLOW}Querying pool info...${NC}"
+            echo -e "${YELLOW}Querying vault info...${NC}"
             zigchaind query wasm contract-state smart $LP_POOL_ADDRESS \
-                '{"pool_info":{}}' \
+                '{"vault_info":{}}' \
                 --node $NODE \
                 --output json | jq '.data'
             ;;

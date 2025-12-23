@@ -1,0 +1,15 @@
+# Token Vault Contract - Deployed on zig-test-2
+# Date: $(date)
+# Version: v1.0 (Optimized WASM: 232KB)
+
+export VAULT_ADDRESS="zig1jj787thux4fycfh9882lelpzqmxfht5jq62r54x5x59lpr4wuvtqgmdcvm"
+export LP_FULL_DENOM="coin.zig1jj787thux4fycfh9882lelpzqmxfht5jq62r54x5x59lpr4wuvtqgmdcvm.vaulttoken"
+export STABLECOIN_DENOM="uzig"
+export CODE_ID="1617"
+export NODE="https://public-zigchain-testnet-rpc.numia.xyz:443"
+export CHAIN_ID="zig-test-2"
+export WALLET="mynewwallet"
+export MY_ADDR="zig1ug335mpcdn2vpk8p08v4k9z7cqtdg0jj4tqr92"
+
+# For backwards compatibility
+export LP_POOL_ADDRESS="$VAULT_ADDRESS"

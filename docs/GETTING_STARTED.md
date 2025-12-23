@@ -298,6 +298,38 @@ The contract performs several checks on every transaction:
 - All math is overflow-protected
 - Balances are verified at each step
 
+### Why Only One Token Type?
+
+**This is by design, not a limitation.** Each vault instance accepts only ONE specific token denomination set during deployment. Here's why:
+
+**Security Benefits:**
+- Prevents accidental deposits of wrong tokens
+- Maintains exact 1:1 ratio (mixing tokens would break this)
+- Simpler to audit and verify
+- No complex token conversion logic needed
+- Eliminates price oracle risks
+
+**For Different Tokens:**
+If you need to accept a different token (USDT, USDC, ATOM, etc.):
+1. Deploy a NEW vault instance with that token's denom
+2. Each vault operates independently
+3. Users interact with the vault that matches their token
+
+**Example:** You could have:
+- Vault A: Accepts UZIG, issues UZIG-LP tokens
+- Vault B: Accepts USDT, issues USDT-LP tokens  
+- Vault C: Accepts ATOM, issues ATOM-LP tokens
+
+Each vault is completely separate with its own contract address and LP tokens.
+
+**Current Deployment:**
+This deployment was configured for UZIG during instantiation. To check what token ANY vault accepts, query its config:
+```bash
+zigchaind query wasm contract-state smart $VAULT_ADDRESS '{"config":{}}' --node $NODE
+```
+
+**Bottom line:** This restriction is a feature that keeps the vault simple, secure, and maintainable. If you need multiple tokens, deploy multiple vaults.
+
 ## Troubleshooting
 
 ### "Insufficient funds" error
@@ -351,6 +383,27 @@ Now that you understand the basics:
 3. **Try a withdrawal** - Withdraw half to test the process
 4. **Read the security docs** - See `docs/SECURITY.md`
 5. **Learn about queries** - See `docs/QUERIES.md` for advanced usage
+
+### Want to Use a Different Token?
+
+If you need a vault for a different token (USDT, USDC, ATOM, etc.):
+
+1. **Edit the deployment script** (`scripts/deploy_tokenfactory.sh`):
+   ```bash
+   # Change the STABLECOIN_DENOM variable
+   STABLECOIN_DENOM="uusdt"  # Instead of "uzig"
+   ```
+
+2. **Run the deployment**:
+   ```bash
+   bash scripts/deploy_tokenfactory.sh
+   ```
+
+3. **New vault created** - You'll get a new contract address that accepts your chosen token
+
+4. **Update vault_addresses.txt** with the new contract details
+
+Each token needs its own vault instance for security and proper 1:1 accounting. You can deploy as many vaults as you need for different tokens.
 
 ## Getting Help
 

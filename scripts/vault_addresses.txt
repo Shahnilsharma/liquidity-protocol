@@ -1,11 +1,11 @@
 # Token Vault Contract - Deployed on zig-test-2
-# Date: $(date)
+# Date: Tue Dec 23 16:52:33 PKT 2025
 # Version: v1.0 (Optimized WASM: 232KB)
 
-export VAULT_ADDRESS="zig1jj787thux4fycfh9882lelpzqmxfht5jq62r54x5x59lpr4wuvtqgmdcvm"
-export LP_FULL_DENOM="coin.zig1jj787thux4fycfh9882lelpzqmxfht5jq62r54x5x59lpr4wuvtqgmdcvm.vaulttoken"
-export STABLECOIN_DENOM="uzig"
-export CODE_ID="1617"
+export VAULT_ADDRESS="zig1ruja46aqr4qfj9jn6g63wwqeja8lwrl4x0tk4m9448tnz0s5s7xsgdnvxq"
+export LP_FULL_DENOM="coin.zig1ruja46aqr4qfj9jn6g63wwqeja8lwrl4x0tk4m9448tnz0s5s7xsgdnvxq.lptoken"
+export STABLECOIN_DENOM="coin.zig1zpnw5dtzzttmgtdjgtywt08wnlyyskpuupy3cfw8mytlslx54j9sgz6w4n.tootopi"
+export CODE_ID="1622"
 export NODE="https://public-zigchain-testnet-rpc.numia.xyz:443"
 export CHAIN_ID="zig-test-2"
 export WALLET="mynewwallet"

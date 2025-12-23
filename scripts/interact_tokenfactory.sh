@@ -74,8 +74,16 @@ while true; do
             echo -e "${YELLOW}Waiting for confirmation...${NC}"
             sleep 6
             
-            echo -e "${YELLOW}Transaction result:${NC}"
-            zigchaind query tx $TXHASH --node $NODE --output json | jq '.code, .raw_log'
+            RESULT=$(zigchaind query tx $TXHASH --node $NODE --output json 2>/dev/null)
+            CODE=$(echo "$RESULT" | jq -r '.code')
+            
+            if [ "$CODE" = "0" ]; then
+                echo -e "${GREEN}✓ Deposit successful!${NC}"
+                echo -e "${BLUE}Check your LP token balance (option 6)${NC}"
+            else
+                echo -e "${YELLOW}Transaction result:${NC}"
+                echo "$RESULT" | jq '.code, .raw_log'
+            fi
             ;;
             
         2)
@@ -100,8 +108,16 @@ while true; do
             echo -e "${YELLOW}Waiting for confirmation...${NC}"
             sleep 6
             
-            echo -e "${YELLOW}Transaction result:${NC}"
-            zigchaind query tx $TXHASH --node $NODE --output json | jq '.code, .raw_log'
+            RESULT=$(zigchaind query tx $TXHASH --node $NODE --output json 2>/dev/null)
+            CODE=$(echo "$RESULT" | jq -r '.code')
+            
+            if [ "$CODE" = "0" ]; then
+                echo -e "${GREEN}✓ Withdrawal successful!${NC}"
+                echo -e "${BLUE}Check your stablecoin balance (option 6)${NC}"
+            else
+                echo -e "${YELLOW}Transaction result:${NC}"
+                echo "$RESULT" | jq '.code, .raw_log'
+            fi
             ;;
             
         3)

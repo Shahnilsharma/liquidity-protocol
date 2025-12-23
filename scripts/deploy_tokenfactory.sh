@@ -37,17 +37,19 @@ echo ""
 # Build optimized WASM
 echo -e "${YELLOW}Building optimized WASM binary...${NC}"
 if docker ps >/dev/null 2>&1; then
+    # Backup old WASM if it exists
+    if [ -f "artifacts/liquidity_protocol.wasm" ]; then
+        sudo mv artifacts/liquidity_protocol.wasm artifacts/liquidity_protocol.wasm.old 2>/dev/null || true
+    fi
+    
+    # Run optimizer
     docker run --rm -v "$(pwd)":/code \
       --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target \
       --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry \
       cosmwasm/optimizer:0.16.1
     
-    # Move optimized binary
-    if [ -f "artifacts/liquidity_protocol.wasm" ]; then
-        sudo mv artifacts/liquidity_protocol.wasm artifacts/liquidity_protocol.wasm.old 2>/dev/null || true
-    fi
-    sudo mv artifacts/liquidity_protocol-aarch64.wasm artifacts/liquidity_protocol.wasm 2>/dev/null || \
-    sudo mv artifacts/liquidity_protocol.wasm artifacts/liquidity_protocol.wasm
+    # Fix permissions (Docker creates files as root)
+    sudo chown $(whoami):$(whoami) artifacts/liquidity_protocol.wasm 2>/dev/null || true
 else
     echo -e "${YELLOW}Docker not available, using regular build...${NC}"
     cargo build --release --target wasm32-unknown-unknown
@@ -112,9 +114,11 @@ echo -e "${BLUE}Instantiation message:${NC}"
 echo "$INIT_MSG" | jq '.'
 echo ""
 
+echo -e "${YELLOW}Note: Sending 100 UZIG with instantiation to cover denom creation fee${NC}"
 INSTANTIATE_TX=$(zigchaind tx wasm instantiate $CODE_ID "$INIT_MSG" \
     --from $WALLET \
     --label "lp-pool-tokenfactory-$(date +%s)" \
+    --amount 100000000uzig \
     --node $NODE \
     --chain-id $CHAIN_ID \
     --gas-prices $GAS_PRICES \
@@ -141,18 +145,25 @@ echo ""
 
 # Save contract addresses
 mkdir -p scripts
-cat > scripts/contract_addresses.txt <<EOF
-# ZigChain LP Pool - TokenFactory Edition
-# Deployed on: $(date)
-# Chain: $CHAIN_ID
+cat > scripts/vault_addresses.txt <<EOF
+# Token Vault Contract - Deployed on zig-test-2
+# Date: $(date)
+# Version: v1.0 (Optimized WASM: 232KB)
 
-export LP_POOL_ADDRESS="$CONTRACT_ADDR"
+export VAULT_ADDRESS="$CONTRACT_ADDR"
 export LP_FULL_DENOM="$LP_FULL_DENOM"
 export STABLECOIN_DENOM="$STABLECOIN_DENOM"
 export CODE_ID="$CODE_ID"
+export NODE="$NODE"
+export CHAIN_ID="$CHAIN_ID"
+export WALLET="$WALLET"
+export MY_ADDR="$MY_ADDR"
+
+# For backwards compatibility
+export LP_POOL_ADDRESS="\$VAULT_ADDRESS"
 EOF
 
-echo -e "${GREEN}Contract addresses saved to scripts/contract_addresses.txt${NC}"
+echo -e "${GREEN}Vault addresses saved to scripts/vault_addresses.txt${NC}"
 echo ""
 
 # Query contract config
@@ -160,9 +171,9 @@ echo -e "${YELLOW}Querying contract config...${NC}"
 zigchaind query wasm contract-state smart $CONTRACT_ADDR '{"config":{}}' --node $NODE --output json | jq '.'
 echo ""
 
-# Query pool info
-echo -e "${YELLOW}Querying pool info...${NC}"
-zigchaind query wasm contract-state smart $CONTRACT_ADDR '{"pool_info":{}}' --node $NODE --output json | jq '.'
+# Query vault info
+echo -e "${YELLOW}Querying vault info...${NC}"
+zigchaind query wasm contract-state smart $CONTRACT_ADDR '{"vault_info":{}}' --node $NODE --output json | jq '.'
 echo ""
 
 # Check if LP denom was created in bank module
@@ -174,11 +185,11 @@ echo -e "${GREEN}================================${NC}"
 echo -e "${GREEN}Deployment Complete!${NC}"
 echo -e "${GREEN}================================${NC}"
 echo ""
-echo -e "${BLUE}Contract Address:${NC} $CONTRACT_ADDR"
+echo -e "${BLUE}Vault Address:${NC} $CONTRACT_ADDR"
 echo -e "${BLUE}LP Token Denom:${NC} $LP_FULL_DENOM"
 echo -e "${BLUE}Stablecoin Denom:${NC} $STABLECOIN_DENOM"
 echo ""
-echo -e "${YELLOW}To interact with the contract, use:${NC}"
-echo -e "  source scripts/contract_addresses.txt"
-echo -e "  ./scripts/interact.sh"
+echo -e "${YELLOW}To interact with the vault, use:${NC}"
+echo -e "  source scripts/vault_addresses.txt"
+echo -e "  bash scripts/interact_tokenfactory.sh"
 echo ""

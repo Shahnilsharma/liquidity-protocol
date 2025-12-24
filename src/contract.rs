@@ -74,7 +74,7 @@ pub fn instantiate(
         env.contract.address.to_string(),
         msg.lp_subdenom.clone(),
         msg.lp_minting_cap.to_string(),
-        msg.can_change_minting_cap.unwrap_or(false),
+        msg.can_change_minting_cap.unwrap_or(true),
         msg.uri,
         msg.uri_hash,
         msg.description,

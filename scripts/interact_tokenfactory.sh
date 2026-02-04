@@ -18,10 +18,11 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 # Load contract addresses
-if [ -f "scripts/vault_addresses.txt" ]; then
-    source scripts/vault_addresses.txt
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/vault_addresses.txt" ]; then
+    source "$SCRIPT_DIR/vault_addresses.txt"
 else
-    echo "Error: scripts/vault_addresses.txt not found. Run deploy_tokenfactory.sh first."
+    echo "Error: vault_addresses.txt not found in $SCRIPT_DIR. Run deploy_tokenfactory.sh first."
     exit 1
 fi
 

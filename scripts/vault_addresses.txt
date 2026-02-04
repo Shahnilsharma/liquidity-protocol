@@ -8,7 +8,7 @@ export STABLECOIN_DENOM="coin.zig1zpnw5dtzzttmgtdjgtywt08wnlyyskpuupy3cfw8mytlsl
 export CODE_ID="1622"
 export NODE="https://public-zigchain-testnet-rpc.numia.xyz:443"
 export CHAIN_ID="zig-test-2"
-export WALLET="mynewwallet"
+export WALLET="test-wallet"
 export MY_ADDR="zig1ug335mpcdn2vpk8p08v4k9z7cqtdg0jj4tqr92"
 
 # For backwards compatibility

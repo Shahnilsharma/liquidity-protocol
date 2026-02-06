@@ -7,8 +7,8 @@ set -e
 # Configuration
 NODE="https://public-zigchain-testnet-rpc.numia.xyz:443"
 CHAIN_ID="zig-test-2"
-WALLET="mynewwallet"
-GAS_PRICES="0.025uzig"
+WALLET="wallet2"
+GAS_PRICES="0.0025uzig"
 GAS_AUTO="--gas auto --gas-adjustment 1.5"
 
 # Colors
@@ -43,14 +43,16 @@ echo ""
 while true; do
     echo "Choose an action:"
     echo "1) Deposit (send stablecoin, receive LP tokens)"
-    echo "2) Withdraw (send LP tokens, receive stablecoin)"
-    echo "3) Query config"
-    echo "4) Query vault info"
-    echo "5) Query user info"
-    echo "6) Check balances"
-    echo "7) Exit"
+    echo "2) Request Withdrawal (send LP tokens, create pending withdrawal)"
+    echo "3) Claim Withdrawal (claim pending withdrawal after time lock)"
+    echo "4) Query config (view withdrawal delay & settings)"
+    echo "5) Query vault info"
+    echo "6) Query user info"
+    echo "7) Query pending withdrawals"
+    echo "8) Check balances"
+    echo "9) Exit"
     echo ""
-    read -p "Enter choice [1-7]: " choice
+    read -p "Enter choice [1-9]: " choice
 
     case $choice in
         1)
@@ -88,12 +90,12 @@ while true; do
             ;;
             
         2)
-            echo -e "${YELLOW}Withdraw${NC}"
+            echo -e "${YELLOW}Request Withdrawal${NC}"
             read -p "Enter amount of LP tokens to withdraw: " LP_AMOUNT
             
-            echo -e "${BLUE}Sending withdrawal transaction...${NC}"
+            echo -e "${BLUE}Requesting withdrawal (2-day time lock will apply)...${NC}"
             TX=$(zigchaind tx wasm execute $LP_POOL_ADDRESS \
-                '{"withdraw":{}}' \
+                '{"request_withdraw":{}}' \
                 --from $WALLET \
                 --amount "${LP_AMOUNT}${LP_FULL_DENOM}" \
                 --node $NODE \
@@ -113,8 +115,26 @@ while true; do
             CODE=$(echo "$RESULT" | jq -r '.code')
             
             if [ "$CODE" = "0" ]; then
-                echo -e "${GREEN}✓ Withdrawal successful!${NC}"
-                echo -e "${BLUE}Check your stablecoin balance (option 6)${NC}"
+                echo -e "${GREEN}✓ Withdrawal request created!${NC}"
+                # Extract withdrawal_id from events
+                WITHDRAWAL_ID=$(echo "$RESULT" | jq -r '.events[] | select(.type=="wasm") | .attributes[] | select(.key=="withdrawal_id") | .value' | head -1)
+                RELEASE_TIME=$(echo "$RESULT" | jq -r '.events[] | select(.type=="wasm") | .attributes[] | select(.key=="release_time") | .value' | head -1)
+                
+                if [ -n "$WITHDRAWAL_ID" ] && [ "$WITHDRAWAL_ID" != "null" ]; then
+                    echo -e "${BLUE}Withdrawal ID:${NC} $WITHDRAWAL_ID"
+                    echo -e "${BLUE}Release Time:${NC} $RELEASE_TIME (Unix timestamp)"
+                    
+                    # Convert timestamp to human readable
+                    if command -v date &> /dev/null; then
+                        READABLE_TIME=$(date -d @"$RELEASE_TIME" 2>/dev/null || date -r "$RELEASE_TIME" 2>/dev/null || echo "Unable to convert")
+                        echo -e "${BLUE}Release Date:${NC} $READABLE_TIME"
+                    fi
+                    
+                    echo -e "${YELLOW}Note: You must wait 2 days (172,800 seconds) before claiming.${NC}"
+                    echo -e "${BLUE}Use option 3 to claim when ready, and option 7 to check pending withdrawals.${NC}"
+                else
+                    echo -e "${BLUE}Check your pending withdrawals (option 7)${NC}"
+                fi
             else
                 echo -e "${YELLOW}Transaction result:${NC}"
                 echo "$RESULT" | jq '.code, .raw_log'
@@ -122,14 +142,76 @@ while true; do
             ;;
             
         3)
-            echo -e "${YELLOW}Querying config...${NC}"
-            zigchaind query wasm contract-state smart $LP_POOL_ADDRESS \
-                '{"config":{}}' \
+            echo -e "${YELLOW}Claim Withdrawal${NC}"
+            
+            # First show pending withdrawals
+            echo -e "${BLUE}Your pending withdrawals:${NC}"
+            PENDING=$(zigchaind query wasm contract-state smart $LP_POOL_ADDRESS \
+                "{\"pending_withdrawals\":{\"address\":\"$MY_ADDR\"}}" \
                 --node $NODE \
-                --output json | jq '.data'
+                --output json)
+            
+            echo "$PENDING" | jq '.data'
+            
+            # Get current time for comparison
+            CURRENT_TIME=$(date +%s)
+            
+            # Extract claimable withdrawals
+            CLAIMABLE=$(echo "$PENDING" | jq ".data.withdrawals[] | select(.claimable==true)")
+            
+            if [ -z "$CLAIMABLE" ]; then
+                echo -e "${YELLOW}No withdrawals are ready to claim yet.${NC}"
+                echo -e "${BLUE}Withdrawals must wait 2 days (172,800 seconds) from request time.${NC}"
+                continue
+            fi
+            
+            read -p "Enter withdrawal ID to claim: " WITHDRAWAL_ID
+            
+            echo -e "${BLUE}Claiming withdrawal...${NC}"
+            TX=$(zigchaind tx wasm execute $LP_POOL_ADDRESS \
+                "{\"claim_withdraw\":{\"withdrawal_id\":$WITHDRAWAL_ID}}" \
+                --from $WALLET \
+                --node $NODE \
+                --chain-id $CHAIN_ID \
+                --gas-prices $GAS_PRICES \
+                $GAS_AUTO \
+                --output json \
+                -y)
+            
+            echo "$TX" | jq '.'
+            TXHASH=$(echo "$TX" | jq -r '.txhash')
+            echo -e "${GREEN}Transaction hash:${NC} $TXHASH"
+            echo -e "${YELLOW}Waiting for confirmation...${NC}"
+            sleep 6
+            
+            RESULT=$(zigchaind query tx $TXHASH --node $NODE --output json 2>/dev/null)
+            CODE=$(echo "$RESULT" | jq -r '.code')
+            
+            if [ "$CODE" = "0" ]; then
+                echo -e "${GREEN}✓ Withdrawal claimed successfully!${NC}"
+                echo -e "${BLUE}Check your stablecoin balance (option 8)${NC}"
+            else
+                echo -e "${YELLOW}Transaction result:${NC}"
+                echo "$RESULT" | jq '.code, .raw_log'
+            fi
             ;;
             
         4)
+            echo -e "${YELLOW}Querying config...${NC}"
+            CONFIG=$(zigchaind query wasm contract-state smart $LP_POOL_ADDRESS \
+                '{"config":{}}' \
+                --node $NODE \
+                --output json | jq '.data')
+            
+            echo "$CONFIG"
+            
+            # Show withdrawal delay in human readable format
+            DELAY=$(echo "$CONFIG" | jq -r '.withdrawal_delay')
+            DAYS=$((DELAY / 86400))
+            echo -e "${BLUE}Withdrawal delay: $DELAY seconds ($DAYS days)${NC}"
+            ;;
+            
+        5)
             echo -e "${YELLOW}Querying vault info...${NC}"
             zigchaind query wasm contract-state smart $LP_POOL_ADDRESS \
                 '{"vault_info":{}}' \
@@ -137,7 +219,7 @@ while true; do
                 --output json | jq '.data'
             ;;
             
-        5)
+        6)
             echo -e "${YELLOW}Querying user info...${NC}"
             zigchaind query wasm contract-state smart $LP_POOL_ADDRESS \
                 "{\"user_info\":{\"address\":\"$MY_ADDR\"}}" \
@@ -145,7 +227,50 @@ while true; do
                 --output json | jq '.data'
             ;;
             
-        6)
+        7)
+            echo -e "${YELLOW}Querying pending withdrawals...${NC}"
+            PENDING=$(zigchaind query wasm contract-state smart $LP_POOL_ADDRESS \
+                "{\"pending_withdrawals\":{\"address\":\"$MY_ADDR\"}}" \
+                --node $NODE \
+                --output json)
+            
+            echo "$PENDING" | jq '.data'
+            
+            # Show human-readable times
+            CURRENT_TIME=$(date +%s)
+            echo ""
+            echo -e "${BLUE}Current time:${NC} $(date)"
+            echo -e "${BLUE}Current timestamp:${NC} $CURRENT_TIME"
+            
+            # Check each withdrawal
+            WITHDRAWALS=$(echo "$PENDING" | jq -r '.data.withdrawals[] | @json')
+            if [ -n "$WITHDRAWALS" ]; then
+                echo ""
+                echo -e "${BLUE}Withdrawal Status:${NC}"
+                while IFS= read -r withdrawal; do
+                    WID=$(echo "$withdrawal" | jq -r '.id')
+                    AMOUNT=$(echo "$withdrawal" | jq -r '.amount')
+                    RELEASE=$(echo "$withdrawal" | jq -r '.release_time')
+                    CLAIMABLE=$(echo "$withdrawal" | jq -r '.claimable')
+                    
+                    # Convert timestamp (nanoseconds to seconds)
+                    RELEASE_SEC=$((RELEASE / 1000000000))
+                    TIME_LEFT=$((RELEASE_SEC - CURRENT_TIME))
+                    
+                    echo -e "  ID: $WID | Amount: $AMOUNT"
+                    if [ "$CLAIMABLE" = "true" ]; then
+                        echo -e "  ${GREEN}✓ Ready to claim!${NC}"
+                    else
+                        HOURS_LEFT=$((TIME_LEFT / 3600))
+                        MINS_LEFT=$(((TIME_LEFT % 3600) / 60))
+                        echo -e "  ${YELLOW}⏳ Locked for $HOURS_LEFT hours, $MINS_LEFT minutes${NC}"
+                    fi
+                    echo ""
+                done <<< "$WITHDRAWALS"
+            fi
+            ;;
+            
+        8)
             echo -e "${YELLOW}Checking balances...${NC}"
             echo -e "${BLUE}Stablecoin balance:${NC}"
             zigchaind query bank balances $MY_ADDR --node $NODE --output json | \
@@ -156,7 +281,7 @@ while true; do
                 jq ".balances[] | select(.denom==\"$LP_FULL_DENOM\")"
             ;;
             
-        7)
+        9)
             echo "Exiting..."
             exit 0
             ;;

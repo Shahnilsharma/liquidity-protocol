@@ -8,7 +8,7 @@ set -e
 # Configuration
 NODE="https://public-zigchain-testnet-rpc.numia.xyz:443"
 CHAIN_ID="zig-test-2"
-WALLET="mynewwallet"
+WALLET="test-wallet"
 GAS_PRICES="0.025uzig"
 GAS_AUTO="--gas auto --gas-adjustment 1.5"
 
@@ -46,7 +46,7 @@ if docker ps >/dev/null 2>&1; then
     docker run --rm -v "$(pwd)":/code \
       --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target \
       --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry \
-      cosmwasm/optimizer:0.16.1
+      cosmwasm/optimizer:0.17.0
     
     # Fix permissions (Docker creates files as root)
     sudo chown $(whoami):$(whoami) artifacts/liquidity_protocol.wasm 2>/dev/null || true
@@ -98,12 +98,30 @@ LP_SUBDENOM=${LP_SUBDENOM:-lptoken}
 read -p "Enter LP minting cap (default: 1000000000000): " LP_CAP
 LP_CAP=${LP_CAP:-1000000000000}
 
+echo ""
+echo -e "${BLUE}Withdrawal delay determines the time lock for withdrawals (IMMUTABLE after deployment!)${NC}"
+echo -e "${YELLOW}Options (REQUIRED - no default):${NC}"
+echo -e "  - 120 (2 minutes) - Minimum, for quick testing"
+echo -e "  - 3600 (1 hour) - Short delay, testnet"
+echo -e "  - 86400 (1 day) - Fast liquidity"
+echo -e "  - 172800 (2 days) - Balanced security"
+echo -e "  - 604800 (7 days) - High security, recommended for mainnet"
+echo ""
+read -p "Enter withdrawal delay in seconds (REQUIRED, 120-2592000): " WITHDRAWAL_DELAY
+
+# Validate that a value was entered
+if [ -z "$WITHDRAWAL_DELAY" ]; then
+    echo -e "${RED}Error: withdrawal_delay_seconds is REQUIRED!${NC}"
+    exit 1
+fi
+
 INIT_MSG=$(cat <<EOF
 {
   "stablecoin_denom": "$STABLECOIN_DENOM",
   "lp_subdenom": "$LP_SUBDENOM",
   "lp_minting_cap": "$LP_CAP",
   "can_change_minting_cap": false,
+  "withdrawal_delay_seconds": $WITHDRAWAL_DELAY,
   "description": "Liquidity Pool LP Token - TokenFactory Edition",
   "admin": "$MY_ADDR"
 }

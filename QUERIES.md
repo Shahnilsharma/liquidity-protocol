@@ -8,13 +8,17 @@ Quick reference for querying the Token Vault contract. For detailed documentatio
 # Load configuration
 source scripts/vault_addresses.txt
 
-# Query vault state (TVL and LP supply)
+# Query vault state (TVL, LP supply, and pending withdrawals)
 zigchaind query wasm contract-state smart $VAULT_ADDRESS \
   '{"vault_info":{}}' --node $NODE --output json | jq '.data'
 
 # Query your position
 zigchaind query wasm contract-state smart $VAULT_ADDRESS \
   "{\"user_info\":{\"address\":\"$MY_ADDR\"}}" --node $NODE --output json | jq '.data'
+
+# Query your pending withdrawals
+zigchaind query wasm contract-state smart $VAULT_ADDRESS \
+  "{\"pending_withdrawals\":{\"address\":\"$MY_ADDR\"}}" --node $NODE --output json | jq '.data'
 
 # Query your balances
 zigchaind query bank balances $MY_ADDR --node $NODE --output json | jq '.balances'
@@ -24,9 +28,11 @@ zigchaind query bank balances $MY_ADDR --node $NODE --output json | jq '.balance
 
 | Query | Command | What It Returns |
 |-------|---------|-----------------|
-| **Config** | `'{"config":{}}'` | Stablecoin denom, LP denom, admin |
-| **Vault State** | `'{"vault_info":{}}'` | Total deposits, LP supply |
+| **Config** | `'{"config":{}}'` | Stablecoin denom, LP denom, admin, withdrawal delay |
+| **Vault State** | `'{"vault_info":{}}'` | Total deposits, LP supply, pending withdrawals |
 | **User Position** | `'{"user_info":{"address":"..."}}'` | User's LP balance, stablecoin value |
+| **Pending Withdrawals** | `'{"pending_withdrawals":{"address":"..."}}'` | All pending withdrawals for a user |
+| **Specific Withdrawal** | `'{"withdrawal":{"address":"...","withdrawal_id":0}}'` | Details of a specific pending withdrawal |
 | **Bank Balance** | `query bank balances <addr>` | All native token balances |
 
 ## Setup
@@ -45,6 +51,152 @@ export MY_ADDR="zig1ug335mpcdn2vpk8p08v4k9z7cqtdg0jj4tqr92"
 
 ---
 
+## Contract Instantiation Requirements
+
+**CRITICAL**: When deploying this contract, you MUST follow these requirements:
+
+### Required Parameters
+
+| Parameter | Type | Requirement | Description |
+|-----------|------|-------------|-------------|
+| `stablecoin_denom` | string | Required | Denom of deposit token (e.g., "uzig") |
+| `lp_subdenom` | string | **3-44 characters**, start with lowercase | LP token subdenom (e.g., "lptoken", "vault", "lp123") |
+| `lp_minting_cap` | u128 | Required, > 0 | Maximum LP token supply |
+| `withdrawal_delay_seconds` | u64 | **REQUIRED**, 120-2,592,000 | Time lock duration (2 min - 30 days) |
+
+### Common Instantiation Errors
+
+**Error: "Invalid subdenom - Subdenom must be 3-44 characters"**
+- ❌ **WRONG**: `"lp_subdenom": "vt"` (only 2 characters)
+- ❌ **WRONG**: `"lp_subdenom": "LP"` (must start with lowercase)
+- ✅ **CORRECT**: `"lp_subdenom": "lptoken"` (7 characters, lowercase start)
+- ✅ **CORRECT**: `"lp_subdenom": "vault"` (5 characters)
+
+**Error: "Invalid withdrawal delay"**
+- ❌ **WRONG**: `"withdrawal_delay_seconds": 60` (below 120 minimum)
+- ❌ **WRONG**: Missing `withdrawal_delay_seconds` (field is REQUIRED)
+- ✅ **CORRECT**: `"withdrawal_delay_seconds": 120` (2 minutes minimum)
+- ✅ **CORRECT**: `"withdrawal_delay_seconds": 172800` (2 days)
+
+### Example Instantiation
+
+```bash
+zigchaind tx wasm instantiate $CODE_ID '{
+  "stablecoin_denom": "uzig",
+  "lp_subdenom": "lptoken",
+  "lp_minting_cap": "10000000000000",
+  "can_change_minting_cap": false,
+  "withdrawal_delay_seconds": 120,
+  "description": "My Vault LP Token"
+}' \
+  --from $WALLET \
+  --amount 100000000uzig \
+  --label "my-vault-v1" \
+  --node $NODE \
+  --chain-id $CHAIN_ID \
+  --gas auto --gas-adjustment 1.5 \
+  -y
+```
+
+**Note**: The 100000000uzig is the TokenFactory denom creation fee, not a deposit.
+
+---
+
+## Time-Locked Withdrawal Flow
+
+This vault implements a **2-step withdrawal process** with a **configurable time lock** (2 minutes to 30 days) for enhanced security.
+
+**Time Lock Configuration:**
+- **REQUIRED** at deployment (no default)
+- **Range:** 120 seconds (2 minutes) to 2,592,000 seconds (30 days)
+- **IMMUTABLE** after deployment
+- Common values: 120s (testing), 3600s (1 hour), 86400s (1 day), 172800s (2 days), 604800s (7 days)
+
+### Step 1: Request Withdrawal
+
+When you request a withdrawal:
+1. Your LP tokens are burned immediately
+2. A pending withdrawal is created with a unique ID
+3. The withdrawal is locked for the configured delay (set at deployment)
+4. Your funds remain safe in the contract
+
+**Check your pending withdrawals:**
+```bash
+zigchaind query wasm contract-state smart $VAULT_ADDRESS \
+  "{\"pending_withdrawals\":{\"address\":\"$MY_ADDR\"}}" \
+  --node $NODE --output json | jq '.data'
+```
+
+### Step 2: Claim Withdrawal (After Time Lock)
+
+After the configured time lock expires (check contract config for exact delay):
+1. Query to verify the withdrawal is claimable
+2. Execute the claim transaction with the withdrawal ID
+3. Receive your stablecoins
+
+**Check if ready to claim:**
+```bash
+# Check specific withdrawal
+zigchaind query wasm contract-state smart $VAULT_ADDRESS \
+  "{\"withdrawal\":{\"address\":\"$MY_ADDR\",\"withdrawal_id\":0}}" \
+  --node $NODE --output json | jq '.data.withdrawal.claimable'
+```
+
+**Why Time-Locked Withdrawals?**
+- **Security**: Protects against flash loan attacks and exploits
+- **Safety**: Gives time to detect and respond to unauthorized access
+- **Transparency**: All pending withdrawals are publicly visible
+- **Fairness**: Prevents front-running and market manipulation
+- **Flexibility**: Delay configured at deployment (2 min to 30 days) based on security needs
+
+**Using the Interactive Script:**
+
+The `scripts/interact_tokenfactory.sh` script makes this easy:
+- Option 2: Request Withdrawal (creates pending withdrawal)
+- Option 7: Query Pending Withdrawals (shows status and time remaining)
+- Option 3: Claim Withdrawal (claims after time lock expires)
+- Option 4: Query Config (view configured withdrawal delay)
+
+---
+
+## Execute Messages Reference
+
+While this document focuses on queries, here's a quick reference for execute messages:
+
+### 1. Deposit
+```bash
+zigchaind tx wasm execute $CONTRACT_ADDRESS \
+  '{"deposit":{}}' \
+  --from $WALLET \
+  --amount "${AMOUNT}uzig" \
+  --node $NODE --chain-id $CHAIN_ID \
+  --gas-prices 0.025uzig --gas auto --gas-adjustment 1.5 -y
+```
+**Effect**: Burns your ZIG tokens and mints LP tokens 1:1
+
+### 2. Request Withdrawal
+```bash
+zigchaind tx wasm execute $CONTRACT_ADDRESS \
+  '{"request_withdraw":{}}' \
+  --from $WALLET \
+  --amount "${AMOUNT}${LP_DENOM}" \
+  --node $NODE --chain-id $CHAIN_ID \
+  --gas-prices 0.025uzig --gas auto --gas-adjustment 1.5 -y
+```
+**Effect**: Burns LP tokens, creates pending withdrawal (time lock per contract config)
+
+### 3. Claim Withdrawal
+```bash
+zigchaind tx wasm execute $CONTRACT_ADDRESS \
+  "{\"claim_withdraw\":{\"withdrawal_id\":0}}" \
+  --from $WALLET \
+  --node $NODE --chain-id $CHAIN_ID \
+  --gas-prices 0.025uzig --gas auto --gas-adjustment 1.5 -y
+```
+**Effect**: Claims pending withdrawal after time lock expires, sends ZIG tokens
+
+---
+
 ## Common Queries
 
 ### Get Contract Configuration
@@ -54,7 +206,22 @@ zigchaind query wasm contract-state smart $VAULT_ADDRESS \
   '{"config":{}}' --node $NODE --output json | jq '.data'
 ```
 
-Returns: `stablecoin_denom`, `lp_full_denom`, `admin`
+Returns: `stablecoin_denom`, `lp_full_denom`, `admin`, `withdrawal_delay` (in seconds)
+
+**Example output:**
+```json
+{
+  "stablecoin_denom": "uzig",
+  "lp_full_denom": "coin.zig1...",
+  "admin": "zig1...",
+  "lp_minting_cap": "1000000000000",
+  "can_change_minting_cap": false,
+  "withdrawal_delay": 172800
+}
+```
+
+Note: `withdrawal_delay` shows the configured time lock in seconds. This value was set at deployment and is immutable.
+Common values: 120 (2 min), 3600 (1 hour), 86400 (1 day), 172800 (2 days), 604800 (7 days)
 
 ### Get Vault State (TVL)
 
@@ -63,7 +230,18 @@ zigchaind query wasm contract-state smart $VAULT_ADDRESS \
   '{"vault_info":{}}' --node $NODE --output json | jq '.data'
 ```
 
-Returns: `total_stablecoin_deposited`, `total_lp_supply`
+Returns: `total_stablecoin_deposited`, `total_lp_supply`, `total_pending_withdrawals`
+
+**Example output:**
+```json
+{
+  "total_stablecoin_deposited": "1000000",
+  "total_lp_supply": "800000",
+  "total_pending_withdrawals": "200000"
+}
+```
+
+Note: `total_stablecoin_deposited` includes both active liquidity and pending withdrawals
 
 ### Get Your Position
 
@@ -73,6 +251,49 @@ zigchaind query wasm contract-state smart $VAULT_ADDRESS \
 ```
 
 Returns: `address`, `lp_balance`, `stablecoin_value`
+
+### Get Your Pending Withdrawals
+
+```bash
+zigchaind query wasm contract-state smart $VAULT_ADDRESS \
+  "{\"pending_withdrawals\":{\"address\":\"$MY_ADDR\"}}" \
+  --node $NODE --output json | jq '.data'
+```
+
+Returns: List of all pending withdrawals with IDs, amounts, release times, and claimable status
+
+**Example output:**
+```json
+{
+  "address": "zig1...",
+  "withdrawals": [
+    {
+      "id": 0,
+      "amount": "100000",
+      "release_time": "1738800000000000000",
+      "claimable": false
+    },
+    {
+      "id": 1,
+      "amount": "50000",
+      "release_time": "1738600000000000000",
+      "claimable": true
+    }
+  ]
+}
+```
+
+Note: `release_time` is in nanoseconds. Divide by 1,000,000,000 for Unix timestamp in seconds.
+
+### Get Specific Withdrawal Details
+
+```bash
+zigchaind query wasm contract-state smart $VAULT_ADDRESS \
+  "{\"withdrawal\":{\"address\":\"$MY_ADDR\",\"withdrawal_id\":0}}" \
+  --node $NODE --output json | jq '.data'
+```
+
+Returns: Details of a specific withdrawal request
 
 ### Get All Your Balances
 
@@ -119,7 +340,7 @@ zigchaind query wasm contract-state smart $VAULT_ADDRESS \
   "{\"user_info\":{\"address\":\"$MY_ADDR\"}}" --node $NODE --output json | jq '.data'
 ```
 
-### Before Withdrawal
+### Before Requesting Withdrawal
 
 ```bash
 echo "Your LP balance:"
@@ -129,6 +350,28 @@ zigchaind query wasm contract-state smart $VAULT_ADDRESS \
 echo "Vault liquidity:"
 zigchaind query wasm contract-state smart $VAULT_ADDRESS \
   '{"vault_info":{}}' --node $NODE --output json | jq '.data.total_stablecoin_deposited'
+```
+
+### After Requesting Withdrawal
+
+```bash
+echo "Your pending withdrawals:"
+zigchaind query wasm contract-state smart $VAULT_ADDRESS \
+  "{\"pending_withdrawals\":{\"address\":\"$MY_ADDR\"}}" \
+  --node $NODE --output json | jq '.data'
+
+echo "Vault state:"
+zigchaind query wasm contract-state smart $VAULT_ADDRESS \
+  '{"vault_info":{}}' --node $NODE --output json | jq '.data'
+```
+
+### Before Claiming Withdrawal
+
+```bash
+echo "Check if withdrawal is claimable:"
+zigchaind query wasm contract-state smart $VAULT_ADDRESS \
+  "{\"withdrawal\":{\"address\":\"$MY_ADDR\",\"withdrawal_id\":0}}" \
+  --node $NODE --output json | jq '.data.withdrawal.claimable'
 ```
 
 ---
@@ -211,16 +454,46 @@ setInterval(async () => {
     { vault_info: {} }
   );
   updateTVL(vaultInfo.total_stablecoin_deposited);
+  updatePendingWithdrawals(vaultInfo.total_pending_withdrawals);
 }, 10000);
 
-// Query user info after transactions
-async function afterDeposit() {
+// Query user info and pending withdrawals after transactions
+async function afterRequestWithdrawal(userAddress) {
   await new Promise(resolve => setTimeout(resolve, 6000)); // Wait for block
-  const userInfo = await client.queryContractSmart(
+  
+  // Get pending withdrawals
+  const pendingWithdrawals = await client.queryContractSmart(
     contractAddress,
-    { user_info: { address: userAddress } }
+    { pending_withdrawals: { address: userAddress } }
   );
-  updateUserBalance(userInfo.lp_balance);
+  
+  // Find the latest withdrawal
+  const latest = pendingWithdrawals.withdrawals[pendingWithdrawals.withdrawals.length - 1];
+  
+  // Calculate time remaining
+  const releaseTime = parseInt(latest.release_time) / 1000000000; // Convert nanoseconds to seconds
+  const currentTime = Math.floor(Date.now() / 1000);
+  const timeRemaining = releaseTime - currentTime;
+  
+  displayWithdrawalStatus({
+    id: latest.id,
+    amount: latest.amount,
+    claimable: latest.claimable,
+    timeRemaining: timeRemaining
+  });
+}
+
+// Check if any withdrawals are claimable
+async function checkClaimableWithdrawals(userAddress) {
+  const result = await client.queryContractSmart(
+    contractAddress,
+    { pending_withdrawals: { address: userAddress } }
+  );
+  
+  const claimable = result.withdrawals.filter(w => w.claimable);
+  if (claimable.length > 0) {
+    showClaimNotification(claimable);
+  }
 }
 ```
 
@@ -236,16 +509,33 @@ done
 
 ### For Bots/Automated Systems
 ```bash
-# Check if vault has sufficient liquidity before withdrawal
-MIN_LIQUIDITY=10000
-CURRENT=$(zigchaind query wasm contract-state smart $CONTRACT '{"vault_info":{}}' --node $NODE --output json | jq -r '.data.total_stablecoin_deposited')
+# Check pending withdrawals and claim when ready
+MY_ADDR="zig1..."
+CONTRACT="zig1..."
+NODE="https://public-zigchain-testnet-rpc.numia.xyz:443"
 
-if [ "$CURRENT" -gt "$MIN_LIQUIDITY" ]; then
-  echo "Sufficient liquidity: $CURRENT"
-  # Proceed with withdrawal
+# Get pending withdrawals
+PENDING=$(zigchaind query wasm contract-state smart $CONTRACT \
+  "{\"pending_withdrawals\":{\"address\":\"$MY_ADDR\"}}" \
+  --node $NODE --output json)
+
+# Check for claimable withdrawals
+CLAIMABLE=$(echo "$PENDING" | jq '.data.withdrawals[] | select(.claimable==true)')
+
+if [ -n "$CLAIMABLE" ]; then
+  # Get withdrawal IDs
+  IDS=$(echo "$CLAIMABLE" | jq -r '.id')
+  
+  for ID in $IDS; do
+    echo "Claiming withdrawal ID: $ID"
+    zigchaind tx wasm execute $CONTRACT \
+      "{\"claim_withdraw\":{\"withdrawal_id\":$ID}}" \
+      --from wallet --node $NODE --chain-id zig-test-2 \
+      --gas-prices 0.025uzig --gas auto --gas-adjustment 1.5 -y
+    sleep 6
+  done
 else
-  echo "Insufficient liquidity: $CURRENT"
-  exit 1
+  echo "No withdrawals ready to claim"
 fi
 ```
 
@@ -254,22 +544,34 @@ fi
 ## Best Practices
 
 ### For Regular Users
-1. Always check your balance before withdrawing
-2. Verify transactions completed by querying balances after
-3. Keep your LP tokens in a secure wallet
-4. Don't withdraw during network congestion (higher gas fees)
-5. Use the interactive script for safer operations
+1. Query the contract config to see the withdrawal delay for this vault
+2. Always check your balance before requesting withdrawals
+3. Track your pending withdrawals using query option 7 in the script
+4. Note the withdrawal ID and release time when requesting withdrawal
+5. Wait for the configured time lock to expire (check config or release_time)
+6. Verify transactions completed by querying balances after claiming
+6. Keep your LP tokens in a secure wallet
+7. Don't request withdrawals during network congestion (higher gas fees)
+8. Use the interactive script for safer operations with built-in status checks
 
 ### For Developers
-1. Query vault_info before executing deposits/withdrawals to check liquidity
-2. Implement retry logic for network failures
-3. Validate user input before broadcasting transactions
-4. Cache query results for a few seconds to reduce RPC load
-5. Monitor vault_info regularly to track TVL changes
-6. Always verify bank balances match contract state
-
-### For Integrators
-1. Use the bank module for LP token balance checks (faster)
+1. Query vault_info before executing deposits to check liquidity
+2. Query pending_withdrawals to show users their locked funds
+3. Display time remaining until withdrawals are claimable
+4. Implement retry logic for network failures
+5. Validate user input before broadcasting transactions
+6. Cache query results for a few seconds to reduce RPC load
+7. Monitor vault_info regularly to track TVL and pending withdrawal changes
+8. Always verify bank balances match contract state
+9. Handle the 2-step withdrawal flow in your UI clearly
+10. Show countdown timers for locked withdrawals
+Query pending_withdrawals to show users their locked funds
+4. Display withdrawal status (locked/claimable) prominently in UI
+5. Set up monitoring alerts for vault_info changes
+6. Implement proper error handling for all query types
+7. Consider using WebSocket subscriptions for real-time updates
+8. Auto-refresh pending withdrawals to update claimable status
+9. Provide notifications when withdrawals become claimable
 2. Query user_info only when you need detailed position data
 3. Set up monitoring alerts for vault_info changes
 4. Implement proper error handling for all query types
@@ -278,12 +580,21 @@ fi
 ---
 ## Summary
 
-This Token Vault provides a secure, straightforward way to manage liquidity with a 1:1 deposit/withdrawal mechanism. The use of native TokenFactory tokens means LP tokens work with any wallet that supports the blockchain, and queries are always free.
+This Token Vault provides a secure, straightforward way to manage liquidity with a 1:1 deposit mechanism and time-locked withdrawals for enhanced security. The use of native TokenFactory tokens means LP tokens work with any wallet that supports the blockchain, and queries are always free.
+
+Key features:
+- **Configurable Withdrawal Lock**: Withdrawals require a 2-step process with a time lock (120s to 30 days) configured at deployment
+- **Query Pending Withdrawals**: Track all your pending withdrawals with IDs, amounts, and release times
+- **Claimable Status**: Easy to see which withdrawals are ready to claim
+- **Query Config**: View the withdrawal_delay setting for the vault (immutable after deployment)
 
 The contract handles edge cases gracefully, implements strong security measures, and maintains precise accounting. Whether you're a regular user, developer, or integrator, the query interface provides all the information you need to interact with the vault safely.
 
 Key takeaways:
-- Use the interactive script for the easiest experience
+- Use the interactive script for the easiest experience (includes withdrawal status checks)
+- Query contract config to see the withdrawal delay (withdrawal_delay field)
+- Query pending withdrawals to track your time-locked funds
+- Wait for the configured delay to expire before claiming (check release_time)
 - Query before and after transactions to verify success
 - LP tokens are tradeable native assets
 - All operations are protected by input validation and security checks
@@ -293,9 +604,9 @@ For executing deposits and withdrawals, refer to the main [README.md](README.md)
 
 ---
 
-**Version:** 1.0  
-**Last Updated:** December 23, 2025  
-**Status:** ✅ All Commands Verified & Tested  
+**Version:** 2.0  
+**Last Updated:** February 4, 2026  
+**Status:** ✅ All Commands Verified & Tested with Time-Locked Withdrawals  
 **Network:** ZigChain Testnet (zig-test-2)
 | **Config** | `'{"config":{}}'` | Stablecoin denom, LP denom, admin |
 | **Vault Info** | `'{"vault_info":{}}'` | Total deposits, LP supply |

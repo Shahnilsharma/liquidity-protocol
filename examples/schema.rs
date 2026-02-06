@@ -1,6 +1,6 @@
 use cosmwasm_schema::write_api;
 
-use lp_pool_contract::msg::{ExecuteMsg, InstantiateMsg, QueryMsg, MigrateMsg};
+use liquidity_protocol::msg::{ExecuteMsg, InstantiateMsg, QueryMsg, MigrateMsg};
 
 fn main() {
     write_api! {

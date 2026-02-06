@@ -39,4 +39,16 @@ pub enum ContractError {
 
     #[error("Vault state inconsistent - total deposited does not match LP supply")]
     InconsistentVaultState {},
+
+    #[error("Pending withdrawal not found")]
+    WithdrawalNotFound {},
+
+    #[error("Withdrawal still locked - cannot claim until {release_time}")]
+    WithdrawalLocked { release_time: u64 },
+
+    #[error("No pending withdrawals found for user")]
+    NoPendingWithdrawals {},
+
+    #[error("Invalid withdrawal delay - must be between {min} and {max} seconds")]
+    InvalidWithdrawalDelay { min: u64, max: u64 },
 }

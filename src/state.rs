@@ -21,16 +21,21 @@ pub struct Config {
     /// Withdrawal delay in seconds - IMMUTABLE after instantiation
     /// This provides security against flash attacks and unauthorized withdrawals
     pub withdrawal_delay: u64,
+    /// Address of the external yield-generating lending/borrowing contract
+    /// This vault deposits user funds into this contract to earn yield
+    pub yield_contract_address: Addr,
 }
 
 /// Vault statistics
 #[cw_serde]
 pub struct VaultState {
-    /// Total amount of stablecoins deposited in the vault
-    pub total_stablecoin_deposited: Uint128,
-    /// Total LP tokens minted
+    /// Total shares this vault owns in the yield-generating contract
+    /// As yield accrues, these shares become more valuable
+    pub total_yield_shares: Uint128,
+    /// Total LP tokens minted by this vault
     pub total_lp_minted: Uint128,
     /// Total amount of stablecoins locked in pending withdrawals
+    /// (valued at the time of withdrawal request)
     pub total_pending_withdrawals: Uint128,
 }
 

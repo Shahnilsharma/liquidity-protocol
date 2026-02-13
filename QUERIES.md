@@ -1,6 +1,6 @@
-# Token Vault - Quick Query Reference
+# Yield-Generating Vault - Quick Query Reference
 
-Quick reference for querying the Token Vault contract. For detailed documentation, workflow examples, and integration guides, see the [docs/](docs/) folder.
+Quick reference for querying the Yield-Generating Vault contract. This vault automatically invests deposits into an external lending protocol to earn yield. For detailed documentation, workflow examples, and integration guides, see the [docs/](docs/) folder.
 
 ## Quick Start
 
@@ -8,11 +8,11 @@ Quick reference for querying the Token Vault contract. For detailed documentatio
 # Load configuration
 source scripts/vault_addresses.txt
 
-# Query vault state (TVL, LP supply, and pending withdrawals)
+# Query vault state (yield shares, total value with yield, price per share)
 zigchaind query wasm contract-state smart $VAULT_ADDRESS \
   '{"vault_info":{}}' --node $NODE --output json | jq '.data'
 
-# Query your position
+# Query your position (includes accrued yield)
 zigchaind query wasm contract-state smart $VAULT_ADDRESS \
   "{\"user_info\":{\"address\":\"$MY_ADDR\"}}" --node $NODE --output json | jq '.data'
 
@@ -28,9 +28,9 @@ zigchaind query bank balances $MY_ADDR --node $NODE --output json | jq '.balance
 
 | Query | Command | What It Returns |
 |-------|---------|-----------------|
-| **Config** | `'{"config":{}}'` | Stablecoin denom, LP denom, admin, withdrawal delay |
-| **Vault State** | `'{"vault_info":{}}'` | Total deposits, LP supply, pending withdrawals |
-| **User Position** | `'{"user_info":{"address":"..."}}'` | User's LP balance, stablecoin value |
+| **Config** | `'{"config":{}}'` | Stablecoin denom, LP denom, admin, withdrawal delay, yield contract |
+| **Vault State** | `'{"vault_info":{}}'` | Yield shares, total value with yield, LP supply, price per share |
+| **User Position** | `'{"user_info":{"address":"..."}}'` | User's LP balance, value including accrued yield |
 | **Pending Withdrawals** | `'{"pending_withdrawals":{"address":"..."}}'` | All pending withdrawals for a user |
 | **Specific Withdrawal** | `'{"withdrawal":{"address":"...","withdrawal_id":0}}'` | Details of a specific pending withdrawal |
 | **Bank Balance** | `query bank balances <addr>` | All native token balances |
@@ -63,6 +63,7 @@ export MY_ADDR="zig1ug335mpcdn2vpk8p08v4k9z7cqtdg0jj4tqr92"
 | `lp_subdenom` | string | **3-44 characters**, start with lowercase | LP token subdenom (e.g., "lptoken", "vault", "lp123") |
 | `lp_minting_cap` | u128 | Required, > 0 | Maximum LP token supply |
 | `withdrawal_delay_seconds` | u64 | **REQUIRED**, 120-2,592,000 | Time lock duration (2 min - 30 days) |
+| `yield_contract_address` | string | **REQUIRED** | Address of external yield-generating lending protocol |
 
 ### Common Instantiation Errors
 
@@ -87,7 +88,8 @@ zigchaind tx wasm instantiate $CODE_ID '{
   "lp_minting_cap": "10000000000000",
   "can_change_minting_cap": false,
   "withdrawal_delay_seconds": 120,
-  "description": "My Vault LP Token"
+  "yield_contract_address": "zig188jwfa9tcxed2wdav5faj6vslp0vsq5lnu9yyn0wwg75fmkxv5ussdw5nu",
+  "description": "My Yield Vault LP Token"
 }' \
   --from $WALLET \
   --amount 100000000uzig \
@@ -172,7 +174,13 @@ zigchaind tx wasm execute $CONTRACT_ADDRESS \
   --node $NODE --chain-id $CHAIN_ID \
   --gas-prices 0.025uzig --gas auto --gas-adjustment 1.5 -y
 ```
-**Effect**: Burns your ZIG tokens and mints LP tokens 1:1
+**Effect**: 
+- Deposits your ZIG into the vault
+- Vault automatically invests ZIG into yield protocol
+- Mints LP tokens at current share price
+- **First deposit: 1:1 ratio**
+- **Subsequent deposits: LP tokens based on price per share**
+- Example: If price = 1.025, depositing 1,025 ZIG gives you 1,000 LP tokens
 
 ### 2. Request Withdrawal
 ```bash
@@ -183,7 +191,11 @@ zigchaind tx wasm execute $CONTRACT_ADDRESS \
   --node $NODE --chain-id $CHAIN_ID \
   --gas-prices 0.025uzig --gas auto --gas-adjustment 1.5 -y
 ```
-**Effect**: Burns LP tokens, creates pending withdrawal (time lock per contract config)
+**Effect**: 
+- Burns LP tokens immediately
+- Calculates your share of vault value **including all accrued yield**
+- Creates time-locked pending withdrawal
+- Example: 1,000 LP tokens at price 1.025 = 1,025 ZIG withdrawal (includes 25 ZIG yield)
 
 ### 3. Claim Withdrawal
 ```bash
@@ -193,7 +205,11 @@ zigchaind tx wasm execute $CONTRACT_ADDRESS \
   --node $NODE --chain-id $CHAIN_ID \
   --gas-prices 0.025uzig --gas auto --gas-adjustment 1.5 -y
 ```
-**Effect**: Claims pending withdrawal after time lock expires, sends ZIG tokens
+**Effect**: 
+- Claims pending withdrawal after time lock expires
+- Vault automatically withdraws from yield protocol if needed
+- Sends ZIG tokens to user (principal + all accrued yield)
+- Example: Receive 1,025 ZIG from 1,000 LP tokens (2.5% yield earned)
 
 ---
 
@@ -206,7 +222,7 @@ zigchaind query wasm contract-state smart $VAULT_ADDRESS \
   '{"config":{}}' --node $NODE --output json | jq '.data'
 ```
 
-Returns: `stablecoin_denom`, `lp_full_denom`, `admin`, `withdrawal_delay` (in seconds)
+Returns: `stablecoin_denom`, `lp_full_denom`, `admin`, `withdrawal_delay` (in seconds), `yield_contract_address`
 
 **Example output:**
 ```json
@@ -214,43 +230,63 @@ Returns: `stablecoin_denom`, `lp_full_denom`, `admin`, `withdrawal_delay` (in se
   "stablecoin_denom": "uzig",
   "lp_full_denom": "coin.zig1...",
   "admin": "zig1...",
-  "lp_minting_cap": "1000000000000",
-  "can_change_minting_cap": false,
-  "withdrawal_delay": 172800
+  "withdrawal_delay": 172800,
+  "yield_contract_address": "zig188jwfa9tcxed2wdav5faj6vslp0vsq5lnu9yyn0wwg75fmkxv5ussdw5nu"
 }
 ```
 
 Note: `withdrawal_delay` shows the configured time lock in seconds. This value was set at deployment and is immutable.
 Common values: 120 (2 min), 3600 (1 hour), 86400 (1 day), 172800 (2 days), 604800 (7 days)
 
-### Get Vault State (TVL)
+### Get Vault State (TVL with Yield)
 
 ```bash
 zigchaind query wasm contract-state smart $VAULT_ADDRESS \
   '{"vault_info":{}}' --node $NODE --output json | jq '.data'
 ```
 
-Returns: `total_stablecoin_deposited`, `total_lp_supply`, `total_pending_withdrawals`
+Returns: `total_yield_shares`, `total_stablecoin_value`, `total_lp_supply`, `total_pending_withdrawals`, `price_per_share`
 
 **Example output:**
 ```json
 {
-  "total_stablecoin_deposited": "1000000",
-  "total_lp_supply": "800000",
-  "total_pending_withdrawals": "200000"
+  "total_yield_shares": "1000000",
+  "total_stablecoin_value": "1025000",
+  "total_lp_supply": "1000000",
+  "total_pending_withdrawals": "0",
+  "price_per_share": "1.025000"
 }
 ```
 
-Note: `total_stablecoin_deposited` includes both active liquidity and pending withdrawals
+**Understanding the Response:**
+- `total_yield_shares`: Vault's shares in the external yield protocol
+- `total_stablecoin_value`: Current value of all deposits **including accrued yield** (1,025,000 = 1,000,000 principal + 25,000 yield)
+- `price_per_share`: Current LP token value (1.025 = 2.5% yield earned)
+- **The price per share increases over time as yield accrues!**
 
-### Get Your Position
+### Get Your Position (Including Yield)
 
 ```bash
 zigchaind query wasm contract-state smart $VAULT_ADDRESS \
   "{\"user_info\":{\"address\":\"$MY_ADDR\"}}" --node $NODE --output json | jq '.data'
 ```
 
-Returns: `address`, `lp_balance`, `stablecoin_value`
+Returns: `address`, `lp_balance`, `stablecoin_value` (includes accrued yield)
+
+**Example output:**
+```json
+{
+  "address": "zig1...",
+  "lp_balance": "500000",
+  "stablecoin_value": "512500"
+}
+```
+
+**Understanding Your Position:**
+- You deposited: 500,000 ZIG (received 500,000 LP tokens at 1:1 initially)
+- Current value: 512,500 ZIG (includes 12,500 ZIG yield = 2.5% return)
+- Your LP tokens are now worth 1.025 ZIG each (price per share increased)
+- **When you withdraw, you receive your principal + all accrued yield**
 
 ### Get Your Pending Withdrawals
 
@@ -325,7 +361,7 @@ zigchaind query bank balances $MY_ADDR --node $NODE --output json | \
 
 echo "Vault liquidity:"
 zigchaind query wasm contract-state smart $VAULT_ADDRESS \
-  '{"vault_info":{}}' --node $NODE --output json | jq '.data.total_stablecoin_deposited'
+  '{"vault_info":{}}' --node $NODE --output json | jq '.data.total_stablecoin_value'
 ```
 
 ### After Deposit
@@ -349,7 +385,7 @@ zigchaind query wasm contract-state smart $VAULT_ADDRESS \
 
 echo "Vault liquidity:"
 zigchaind query wasm contract-state smart $VAULT_ADDRESS \
-  '{"vault_info":{}}' --node $NODE --output json | jq '.data.total_stablecoin_deposited'
+  '{"vault_info":{}}' --node $NODE --output json | jq '.data.total_stablecoin_value'
 ```
 
 ### After Requesting Withdrawal
@@ -453,7 +489,8 @@ setInterval(async () => {
     contractAddress,
     { vault_info: {} }
   );
-  updateTVL(vaultInfo.total_stablecoin_deposited);
+  updateTVL(vaultInfo.total_stablecoin_value);  // Includes yield!
+  updatePricePerShare(vaultInfo.price_per_share);
   updatePendingWithdrawals(vaultInfo.total_pending_withdrawals);
 }, 10000);
 
@@ -502,7 +539,7 @@ async function checkClaimableWithdrawals(userAddress) {
 # Create a monitoring script
 #!/bin/bash
 while true; do
-  echo "$(date): TVL=$(zigchaind query wasm contract-state smart $CONTRACT '{"vault_info":{}}' --node $NODE --output json | jq -r '.data.total_stablecoin_deposited')"
+  echo "$(date): TVL=$(zigchaind query wasm contract-state smart $CONTRACT '{"vault_info":{}}' --node $NODE --output json | jq -r '.data.total_stablecoin_value') Price=$(zigchaind query wasm contract-state smart $CONTRACT '{"vault_info":{}}' --node $NODE --output json | jq -r '.data.price_per_share')"
   sleep 60
 done
 ```
@@ -545,22 +582,28 @@ fi
 
 ### For Regular Users
 1. Query the contract config to see the withdrawal delay for this vault
-2. Always check your balance before requesting withdrawals
-3. Track your pending withdrawals using query option 7 in the script
-4. Note the withdrawal ID and release time when requesting withdrawal
-5. Wait for the configured time lock to expire (check config or release_time)
-6. Verify transactions completed by querying balances after claiming
-6. Keep your LP tokens in a secure wallet
-7. Don't request withdrawals during network congestion (higher gas fees)
-8. Use the interactive script for safer operations with built-in status checks
+2. **Query price_per_share regularly to track yield accumulation**
+3. **Your LP token value increases over time - check user_info for current value**
+4. Always check your balance before requesting withdrawals
+5. Track your pending withdrawals using query option 7 in the script
+6. Note the withdrawal ID and release time when requesting withdrawal
+7. Wait for the configured time lock to expire (check config or release_time)
+8. **Remember: You receive principal + yield when you withdraw**
+9. Keep your LP tokens in a secure wallet (they're tradeable!)
+10. Don't request withdrawals during network congestion (higher gas fees)
+11. Use the interactive script for safer operations with built-in status checks
 
 ### For Developers
-1. Query vault_info before executing deposits to check liquidity
-2. Query pending_withdrawals to show users their locked funds
-3. Display time remaining until withdrawals are claimable
-4. Implement retry logic for network failures
-5. Validate user input before broadcasting transactions
-6. Cache query results for a few seconds to reduce RPC load
+1. Query vault_info before executing deposits to check liquidity and price per share
+2. **Display current price_per_share prominently in your UI**
+3. **Calculate and show users their current value including accrued yield**
+4. Query pending_withdrawals to show users their locked funds
+5. Display time remaining until withdrawals are claimable
+6. **Show yield earned: (current_value - initial_deposit) / initial_deposit**
+7. Implement retry logic for network failures
+8. Validate user input before broadcasting transactions
+9. Cache query results for a few seconds to reduce RPC load
+10. **Update price_per_share display every 30-60 seconds**
 7. Monitor vault_info regularly to track TVL and pending withdrawal changes
 8. Always verify bank balances match contract state
 9. Handle the 2-step withdrawal flow in your UI clearly
@@ -580,7 +623,18 @@ Query pending_withdrawals to show users their locked funds
 ---
 ## Summary
 
-This Token Vault provides a secure, straightforward way to manage liquidity with a 1:1 deposit mechanism and time-locked withdrawals for enhanced security. The use of native TokenFactory tokens means LP tokens work with any wallet that supports the blockchain, and queries are always free.
+This **Yield-Generating Vault** automatically invests deposits into an external lending protocol to earn interest for users. It uses share-based pricing where the price per share increases as yield accrues, combined with time-locked withdrawals for enhanced security. The use of native TokenFactory tokens means LP tokens work with any wallet that supports the blockchain, and queries are always free.
+
+### How Yield Generation Works:
+1. **You deposit ZIG** → Vault invests it in lending protocol → You get LP tokens
+2. **Yield accrues** → Price per share increases (e.g., 1.00 → 1.025 → 1.05)
+3. **You withdraw** → Get back your principal + all accrued yield
+
+### Key Differences from Traditional Vaults:
+- ❌ **NOT 1:1**: LP token value increases over time
+- ✅ **Yield Included**: Your LP tokens grow in value automatically
+- ✅ **Share-Based**: Like how traditional finance vaults work
+- ✅ **Transparent**: Query price_per_share anytime to see current value
 
 Key features:
 - **Configurable Withdrawal Lock**: Withdrawals require a 2-step process with a time lock (120s to 30 days) configured at deployment

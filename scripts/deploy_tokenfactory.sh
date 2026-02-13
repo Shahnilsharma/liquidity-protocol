@@ -115,6 +115,18 @@ if [ -z "$WITHDRAWAL_DELAY" ]; then
     exit 1
 fi
 
+echo ""
+echo -e "${BLUE}Yield Contract Integration${NC}"
+echo -e "${YELLOW}Enter the address of the external yield-generating contract${NC}"
+echo -e "${YELLOW}(The contract where deposits will be invested to earn yield)${NC}"
+read -p "Yield contract address (REQUIRED): " YIELD_CONTRACT_ADDRESS
+
+# Validate that a value was entered
+if [ -z "$YIELD_CONTRACT_ADDRESS" ]; then
+    echo -e "${RED}Error: yield_contract_address is REQUIRED!${NC}"
+    exit 1
+fi
+
 INIT_MSG=$(cat <<EOF
 {
   "stablecoin_denom": "$STABLECOIN_DENOM",
@@ -122,8 +134,9 @@ INIT_MSG=$(cat <<EOF
   "lp_minting_cap": "$LP_CAP",
   "can_change_minting_cap": false,
   "withdrawal_delay_seconds": $WITHDRAWAL_DELAY,
-  "description": "Liquidity Pool LP Token - TokenFactory Edition",
-  "admin": "$MY_ADDR"
+  "description": "Liquidity Pool LP Token - TokenFactory Edition with Yield Generation",
+  "admin": "$MY_ADDR",
+  "yield_contract_address": "$YIELD_CONTRACT_ADDRESS"
 }
 EOF
 )

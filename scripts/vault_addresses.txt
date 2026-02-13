@@ -2,14 +2,15 @@
 # Date: Thu Feb  5 13:37:54 PKT 2026
 # Version: v1.0 (Optimized WASM: 232KB)
 
-export VAULT_ADDRESS="zig1l2ggq4aaqk4rr3tah5gz5kltzcw7mzdyx7nva8pf7zczcytgcplslkf0l2"
-export LP_FULL_DENOM="coin.zig1l2ggq4aaqk4rr3tah5gz5kltzcw7mzdyx7nva8pf7zczcytgcplslkf0l2.lptoken"
+export CONTRACT_ADDRESS=zig1ecsme2mmcqxr7e07wp6aepr625u7sz49hwjmsgjtqkqlakgacjpq5ceant
+export LP_FULL_DENOM="coin.zig1ecsme2mmcqxr7e07wp6aepr625u7sz49hwjmsgjtqkqlakgacjpq5ceant.misisipi"
 export STABLECOIN_DENOM="uzig"
-export CODE_ID="1968"
+export CODE_ID="1985"
 export NODE="https://public-zigchain-testnet-rpc.numia.xyz:443"
 export CHAIN_ID="zig-test-2"
-export WALLET="wallet2"
-export MY_ADDR="zig1jkdwa6a5yjur950nvg3t4n6xh4dau4t4sphckq"
+export WALLET="wallet1"
+export MY_ADDR="zig1staghsausa8tee05uelp8cjklv2qpuke5gmna6"
+export VAULT_ADDRESS=zig1ecsme2mmcqxr7e07wp6aepr625u7sz49hwjmsgjtqkqlakgacjpq5ceant
 
 # For backwards compatibility
 export LP_POOL_ADDRESS="$VAULT_ADDRESS"

@@ -24,6 +24,9 @@ pub struct InstantiateMsg {
     /// Must be between 120 (2 minutes) and 2,592,000 (30 days)
     /// Choose carefully as this cannot be changed after instantiation!
     pub withdrawal_delay_seconds: u64,
+    /// Address of the yield-generating contract where funds will be deposited
+    /// This must be a valid contract address of a lending/borrowing protocol
+    pub yield_contract_address: String,
 }
 
 /// Messages that can be executed on the contract
@@ -102,12 +105,17 @@ pub struct ConfigResponse {
 /// Response for VaultInfo query
 #[cw_serde]
 pub struct VaultInfoResponse {
-    /// Total stablecoins deposited in the vault
-    pub total_stablecoin_deposited: Uint128,
+    /// Total shares this vault owns in the yield contract
+    pub total_yield_shares: Uint128,
+    /// Current value of those shares in stablecoins (includes accrued yield)
+    pub total_stablecoin_value: Uint128,
     /// Total LP tokens in circulation
     pub total_lp_supply: Uint128,
     /// Total amount locked in pending withdrawals
     pub total_pending_withdrawals: Uint128,
+    /// Current price per share (in stablecoin base units)
+    /// Calculated as: total_stablecoin_value / total_lp_supply
+    pub price_per_share: String,
 }
 
 /// Response for UserInfo query
@@ -155,3 +163,46 @@ pub struct WithdrawalResponse {
 /// Migration message (for future upgrades)
 #[cw_serde]
 pub struct MigrateMsg {}
+
+// ========== External Yield Contract Messages ==========
+// These messages are used to interact with the external lending/borrowing contract
+
+/// Execute messages for the external yield-generating contract
+#[cw_serde]
+pub enum YieldContractExecuteMsg {
+    /// Deposit funds into the yield contract
+    Deposit {},
+    /// Withdraw funds from the yield contract
+    Withdraw { amount: Uint128 },
+}
+
+/// Query messages for the external yield-generating contract
+#[cw_serde]
+#[derive(QueryResponses)]
+pub enum YieldContractQueryMsg {
+    /// Query the pool state (total_lent, total_borrowed, total_shares)
+    #[returns(YieldPoolResponse)]
+    GetPool {},
+    /// Query a specific user's position in the yield contract
+    #[returns(YieldUserResponse)]
+    GetUser { address: String },
+}
+
+/// Response from yield contract's GetPool query
+/// Matches the actual PoolResponse structure from the yield contract
+#[cw_serde]
+pub struct YieldPoolResponse {
+    /// Total assets lent to the pool (includes accrued interest)
+    pub total_lent: Uint128,
+    /// Total assets borrowed from the pool
+    pub total_borrowed: Uint128,
+}
+
+/// Response from yield contract's GetUser query
+#[cw_serde]
+pub struct YieldUserResponse {
+    /// Amount lent by the user (in shares)
+    pub lent: Uint128,
+    /// Amount borrowed by the user
+    pub borrowed: Uint128,
+}

@@ -1,19 +1,20 @@
 use cosmwasm_std::{
-    entry_point, to_json_binary, Addr, BankMsg, Binary, Coin, Deps, DepsMut, Env, MessageInfo,
-    Order, QuerierWrapper, Response, StdResult, Uint128,
+    entry_point, to_json_binary, Addr, BankMsg, Binary, Coin, CosmosMsg, Deps, DepsMut, Env,
+    MessageInfo, Order, QuerierWrapper, Response, StdResult, Uint128, WasmMsg,
 };
 use cw2::set_contract_version;
 
 use crate::custom::{burn_tokens_msg, create_denom_msg, mint_and_send_tokens_msg};
 use crate::error::ContractError;
 use crate::msg::{
-    ConfigResponse, ExecuteMsg, InstantiateMsg, MigrateMsg, PendingWithdrawalsResponse,
-    QueryMsg, UserInfoResponse, VaultInfoResponse, WithdrawalInfo, WithdrawalResponse,
+    ConfigResponse, ExecuteMsg, InstantiateMsg, MigrateMsg, PendingWithdrawalsResponse, QueryMsg,
+    UserInfoResponse, VaultInfoResponse, WithdrawalInfo, WithdrawalResponse,
+    YieldContractExecuteMsg, YieldContractQueryMsg, YieldUserResponse,
 };
 use crate::state::{
     Config, PendingWithdrawal, VaultState, WithdrawalCounter, CONFIG, CONTRACT_NAME,
-    CONTRACT_VERSION, MAX_WITHDRAWAL_DELAY, MIN_WITHDRAWAL_DELAY,
-    PENDING_WITHDRAWALS, VAULT_STATE, WITHDRAWAL_COUNTERS,
+    CONTRACT_VERSION, MAX_WITHDRAWAL_DELAY, MIN_WITHDRAWAL_DELAY, PENDING_WITHDRAWALS,
+    VAULT_STATE, WITHDRAWAL_COUNTERS,
 };
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -63,21 +64,25 @@ pub fn instantiate(
         None => info.sender.clone(),
     };
 
+    // Validate yield contract address
+    let yield_contract_addr = deps.api.addr_validate(&msg.yield_contract_address)?;
+
     // Construct LP token full denom
     let lp_full_denom = format!("coin.{}.{}", env.contract.address, msg.lp_subdenom);
 
-    // Initialize configuration with IMMUTABLE withdrawal_delay
+    // Initialize configuration with IMMUTABLE withdrawal_delay and yield contract address
     let config = Config {
         stablecoin_denom: msg.stablecoin_denom.clone(),
         lp_full_denom: lp_full_denom.clone(),
         admin: admin_addr.clone(),
         withdrawal_delay,
+        yield_contract_address: yield_contract_addr,
     };
     CONFIG.save(deps.storage, &config)?;
 
-    // Initialize vault state
+    // Initialize vault state - starts with zero shares in yield contract
     let vault_state = VaultState {
-        total_stablecoin_deposited: Uint128::zero(),
+        total_yield_shares: Uint128::zero(),
         total_lp_minted: Uint128::zero(),
         total_pending_withdrawals: Uint128::zero(),
     };
@@ -148,58 +153,87 @@ fn execute_deposit(
         .find(|coin| coin.denom == config.stablecoin_denom)
         .ok_or(ContractError::NoStablecoinSent {})?;
 
-    let amount = stablecoin_sent.amount;
-    if amount.is_zero() {
+    let deposit_amount = stablecoin_sent.amount;
+    if deposit_amount.is_zero() {
         return Err(ContractError::InvalidZeroAmount {});
     }
 
-    // For 1:1 exchange, LP amount equals deposit amount
-    let lp_amount = amount;
-
-    // Load vault state
+    // Load current vault state
     let mut vault_state = VAULT_STATE.load(deps.storage)?;
-    
-    // Update vault state with checked arithmetic
-    vault_state.total_stablecoin_deposited = vault_state
-        .total_stablecoin_deposited
-        .checked_add(amount)
-        .map_err(|_| ContractError::OverflowError {
-            operation: "deposit".to_string(),
-        })?;
 
+    // Query yield contract to get the current value of our position
+    // The GetUser query returns our lent amount (shares converted to current value including yield)
+    let vault_position: YieldUserResponse = deps.querier.query_wasm_smart(
+        config.yield_contract_address.to_string(),
+        &YieldContractQueryMsg::GetUser {
+            address: env.contract.address.to_string(),
+        },
+    )?;
+
+    // Current vault value = what we have lent in the yield contract
+    // This includes accrued yield from interest payments
+    let current_vault_value = vault_position.lent;
+
+    // Calculate how many LP tokens to mint to the depositor
+    // Using the vault share pricing model from PRICECAL.MD:
+    // sharesToMint = depositAmount / pricePerShare
+    // where pricePerShare = totalAssets / totalShares
+    let lp_to_mint = if vault_state.total_lp_minted.is_zero() || current_vault_value.is_zero() {
+        // First deposit or vault value is zero: mint 1:1
+        deposit_amount
+    } else {
+        // Calculate LP tokens: deposit_amount * total_lp_minted / current_vault_value
+        deposit_amount
+            .checked_multiply_ratio(vault_state.total_lp_minted, current_vault_value)
+            .map_err(|e| cosmwasm_std::StdError::generic_err(format!("Multiply ratio error: {}", e)))?
+    };
+
+    if lp_to_mint.is_zero() {
+        return Err(ContractError::Std(cosmwasm_std::StdError::generic_err(
+            "Deposit too small - would mint zero LP tokens",
+        )));
+    }
+
+    // Update vault state
+    // Note: We don't track shares - the yield contract handles that internally
+    // We track our position value through GetUser queries
     vault_state.total_lp_minted = vault_state
         .total_lp_minted
-        .checked_add(lp_amount)
+        .checked_add(lp_to_mint)
         .map_err(|_| ContractError::OverflowError {
             operation: "LP mint".to_string(),
         })?;
 
-    // Security check: Ensure accounting invariant holds
-    // total_deposited >= total_lp_minted (should be equal for 1:1)
-    // We allow >= to handle edge case where there might be pending withdrawals
-    if vault_state.total_stablecoin_deposited
-        < vault_state.total_lp_minted.checked_add(vault_state.total_pending_withdrawals).unwrap_or(Uint128::MAX)
-    {
-        return Err(ContractError::InconsistentVaultState {});
-    }
-
-    // Save state before external call
+    // Save state before external calls
     VAULT_STATE.save(deps.storage, &vault_state)?;
+
+    // Create message to deposit into yield contract
+    // The yield contract will handle share conversion internally
+    let deposit_to_yield_msg = CosmosMsg::Wasm(WasmMsg::Execute {
+        contract_addr: config.yield_contract_address.to_string(),
+        msg: to_json_binary(&YieldContractExecuteMsg::Deposit {})?,
+        funds: vec![Coin {
+            denom: config.stablecoin_denom.clone(),
+            amount: deposit_amount,
+        }],
+    });
 
     // Mint LP tokens to the user via TokenFactory
     let mint_msg = mint_and_send_tokens_msg(
         env.contract.address.to_string(),
         config.lp_full_denom.clone(),
-        lp_amount.to_string(),
+        lp_to_mint.to_string(),
         info.sender.to_string(),
     )?;
 
     Ok(Response::new()
+        .add_message(deposit_to_yield_msg)
         .add_message(mint_msg)
         .add_attribute("method", "deposit")
         .add_attribute("user", info.sender)
-        .add_attribute("stablecoin_amount", amount)
-        .add_attribute("lp_amount", lp_amount))
+        .add_attribute("stablecoin_amount", deposit_amount)
+        .add_attribute("lp_minted", lp_to_mint)
+        .add_attribute("vault_value_before", current_vault_value))
 }
 
 fn execute_request_withdraw(
@@ -228,9 +262,6 @@ fn execute_request_withdraw(
         return Err(ContractError::InvalidZeroAmount {});
     }
 
-    // For 1:1 exchange, stablecoin amount equals LP amount
-    let stablecoin_amount = lp_amount;
-
     // Load vault state for validation
     let mut vault_state = VAULT_STATE.load(deps.storage)?;
 
@@ -238,6 +269,37 @@ fn execute_request_withdraw(
     if vault_state.total_lp_minted < lp_amount {
         return Err(ContractError::Std(cosmwasm_std::StdError::generic_err(
             "LP amount exceeds total minted supply",
+        )));
+    }
+
+    // Query yield contract to get the current value of our position
+    let vault_position: YieldUserResponse = deps.querier.query_wasm_smart(
+        config.yield_contract_address.to_string(),
+        &YieldContractQueryMsg::GetUser {
+            address: env.contract.address.to_string(),
+        },
+    )?;
+
+    // Current vault value including accrued yield
+    let current_vault_value = vault_position.lent;
+
+    // Calculate stablecoin amount to return to user based on their LP token share
+    // Using PRICECAL.MD formula: returnAmount = shares × pricePerShare
+    // where pricePerShare = totalAssets / totalShares
+    let stablecoin_amount = if vault_state.total_lp_minted.is_zero() {
+        return Err(ContractError::Std(cosmwasm_std::StdError::generic_err(
+            "No LP tokens in circulation",
+        )));
+    } else {
+        // User's share of vault = lp_amount * current_vault_value / total_lp_minted
+        lp_amount
+            .checked_multiply_ratio(current_vault_value, vault_state.total_lp_minted)
+            .map_err(|e| cosmwasm_std::StdError::generic_err(format!("Multiply ratio error: {}", e)))?
+    };
+
+    if stablecoin_amount.is_zero() {
+        return Err(ContractError::Std(cosmwasm_std::StdError::generic_err(
+            "Withdrawal amount too small",
         )));
     }
 
@@ -257,12 +319,6 @@ fn execute_request_withdraw(
             operation: "pending withdrawal".to_string(),
         })?;
 
-    // Security check: Ensure accounting invariant
-    // total_deposited >= total_pending (we keep funds for pending withdrawals)
-    if vault_state.total_stablecoin_deposited < vault_state.total_pending_withdrawals {
-        return Err(ContractError::InconsistentVaultState {});
-    }
-
     // Save vault state before any external calls
     VAULT_STATE.save(deps.storage, &vault_state)?;
 
@@ -273,7 +329,7 @@ fn execute_request_withdraw(
         .unwrap_or(WithdrawalCounter { next_id: 0 });
 
     let withdrawal_id = counter.next_id;
-    
+
     // Security check: Prevent withdrawal ID overflow
     counter.next_id = counter
         .next_id
@@ -286,10 +342,7 @@ fn execute_request_withdraw(
 
     // Calculate release time using IMMUTABLE config.withdrawal_delay
     // Security: Use config value, not a constant that could be bypassed
-    let release_time = env
-        .block
-        .time
-        .plus_seconds(config.withdrawal_delay);
+    let release_time = env.block.time.plus_seconds(config.withdrawal_delay);
 
     // Create pending withdrawal
     let pending_withdrawal = PendingWithdrawal {
@@ -311,9 +364,10 @@ fn execute_request_withdraw(
         .add_attribute("method", "request_withdraw")
         .add_attribute("user", user_addr)
         .add_attribute("withdrawal_id", withdrawal_id.to_string())
-        .add_attribute("lp_amount", lp_amount)
-        .add_attribute("stablecoin_amount", stablecoin_amount)
-        .add_attribute("release_time", release_time.to_string()))
+        .add_attribute("lp_burned", lp_amount)
+        .add_attribute("stablecoin_amount_with_yield", stablecoin_amount)
+        .add_attribute("release_time", release_time.to_string())
+        .add_attribute("vault_value_at_request", current_vault_value))
 }
 
 fn execute_claim_withdraw(
@@ -357,11 +411,6 @@ fn execute_claim_withdraw(
     // Load vault state for validation and update
     let mut vault_state = VAULT_STATE.load(deps.storage)?;
 
-    // Security check: Ensure vault has sufficient funds
-    if vault_state.total_stablecoin_deposited < stablecoin_amount {
-        return Err(ContractError::InsufficientVaultBalance {});
-    }
-
     // Security check: Ensure pending withdrawals accounting is correct
     if vault_state.total_pending_withdrawals < stablecoin_amount {
         return Err(ContractError::Std(cosmwasm_std::StdError::generic_err(
@@ -369,14 +418,37 @@ fn execute_claim_withdraw(
         )));
     }
 
-    // Update vault state BEFORE external call (reentrancy protection)
-    vault_state.total_stablecoin_deposited = vault_state
-        .total_stablecoin_deposited
-        .checked_sub(stablecoin_amount)
-        .map_err(|_| ContractError::OverflowError {
-            operation: "withdrawal".to_string(),
-        })?;
+    // Query yield contract to check if we need to withdraw
+    // We need to ensure we have enough liquid ZIG to send to the user
+    let vault_balance = query_bank_balance(
+        &deps.querier,
+        &env.contract.address,
+        &config.stablecoin_denom,
+    )?;
 
+    // Calculate shares to withdraw from yield contract if needed
+    let mut withdraw_msg_opt: Option<CosmosMsg> = None;
+
+    if vault_balance < stablecoin_amount {
+        // Need to withdraw from yield contract
+        let amount_to_withdraw = stablecoin_amount
+            .checked_sub(vault_balance)
+            .map_err(|_| ContractError::OverflowError {
+                operation: "withdraw calculation".to_string(),
+            })?;
+
+        // Create withdraw message for yield contract
+        // Withdraw the exact amount needed - yield contract handles share conversion internally
+        withdraw_msg_opt = Some(CosmosMsg::Wasm(WasmMsg::Execute {
+            contract_addr: config.yield_contract_address.to_string(),
+            msg: to_json_binary(&YieldContractExecuteMsg::Withdraw {
+                amount: amount_to_withdraw,
+            })?,
+            funds: vec![],
+        }));
+    }
+
+    // Update vault state BEFORE external calls (reentrancy protection)
     vault_state.total_pending_withdrawals = vault_state
         .total_pending_withdrawals
         .checked_sub(stablecoin_amount)
@@ -399,12 +471,21 @@ fn execute_claim_withdraw(
         }],
     };
 
-    Ok(Response::new()
-        .add_message(return_msg)
+    let mut response = Response::new()
         .add_attribute("method", "claim_withdraw")
         .add_attribute("user", user_addr)
         .add_attribute("withdrawal_id", withdrawal_id.to_string())
-        .add_attribute("stablecoin_amount", stablecoin_amount))
+        .add_attribute("stablecoin_amount_with_yield", stablecoin_amount);
+
+    // Add withdraw from yield contract message if needed (execute before bank send)
+    if let Some(withdraw_msg) = withdraw_msg_opt {
+        response = response.add_message(withdraw_msg);
+    }
+
+    // Add bank send message last
+    response = response.add_message(return_msg);
+
+    Ok(response)
 }
 
 fn execute_update_config(
@@ -445,10 +526,10 @@ fn execute_update_config(
 pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
         QueryMsg::Config {} => to_json_binary(&query_config(deps)?),
-        QueryMsg::VaultInfo {} => to_json_binary(&query_vault_info(deps)?),
-        QueryMsg::UserInfo { address } => to_json_binary(&query_user_info(deps, address)?),
+        QueryMsg::VaultInfo {} => to_json_binary(&query_vault_info(deps, env.clone())?),
+        QueryMsg::UserInfo { address } => to_json_binary(&query_user_info(deps, env.clone(), address)?),
         QueryMsg::PendingWithdrawals { address } => {
-            to_json_binary(&query_pending_withdrawals(deps, env, address)?)
+            to_json_binary(&query_pending_withdrawals(deps, env.clone(), address)?)
         }
         QueryMsg::Withdrawal {
             address,
@@ -467,25 +548,69 @@ fn query_config(deps: Deps) -> StdResult<ConfigResponse> {
     })
 }
 
-fn query_vault_info(deps: Deps) -> StdResult<VaultInfoResponse> {
+fn query_vault_info(deps: Deps, env: Env) -> StdResult<VaultInfoResponse> {
+    let config = CONFIG.load(deps.storage)?;
     let vault_state = VAULT_STATE.load(deps.storage)?;
 
+    // Query yield contract to get current value of our position
+    let vault_position: YieldUserResponse = deps.querier.query_wasm_smart(
+        config.yield_contract_address.to_string(),
+        &YieldContractQueryMsg::GetUser {
+            address: env.contract.address.to_string(),
+        },
+    )?;
+
+    // Total stablecoin value = what we have lent (includes accrued yield)
+    let total_stablecoin_value = vault_position.lent;
+
+    // Calculate price per share
+    let price_per_share = if vault_state.total_lp_minted.is_zero() {
+        "1.0".to_string()
+    } else {
+        // Calculate as a decimal string: total_value / total_lp
+        let price_ratio = total_stablecoin_value
+            .checked_multiply_ratio(Uint128::new(1_000_000), vault_state.total_lp_minted)
+            .map_err(|e| cosmwasm_std::StdError::generic_err(format!("Multiply ratio error: {}", e)))?;
+        format!("{}.{:06}", price_ratio / Uint128::new(1_000_000), price_ratio % Uint128::new(1_000_000))
+    };
+
     Ok(VaultInfoResponse {
-        total_stablecoin_deposited: vault_state.total_stablecoin_deposited,
+        total_yield_shares: vault_state.total_yield_shares,
+        total_stablecoin_value,
         total_lp_supply: vault_state.total_lp_minted,
         total_pending_withdrawals: vault_state.total_pending_withdrawals,
+        price_per_share,
     })
 }
 
-fn query_user_info(deps: Deps, address: String) -> StdResult<UserInfoResponse> {
+fn query_user_info(deps: Deps, env: Env, address: String) -> StdResult<UserInfoResponse> {
     let config = CONFIG.load(deps.storage)?;
+    let vault_state = VAULT_STATE.load(deps.storage)?;
     let user_addr = deps.api.addr_validate(&address)?;
 
     // Query LP balance from bank module
     let lp_balance = query_bank_balance(&deps.querier, &user_addr, &config.lp_full_denom)?;
 
-    // For 1:1 exchange, stablecoin value equals LP balance
-    let stablecoin_value = lp_balance;
+    // Query yield contract to get current value of vault's position
+    let vault_position: YieldUserResponse = deps.querier.query_wasm_smart(
+        config.yield_contract_address.to_string(),
+        &YieldContractQueryMsg::GetUser {
+            address: env.contract.address.to_string(),
+        },
+    )?;
+
+    // Total vault value including accrued yield
+    let vault_total_value = vault_position.lent;
+
+    // Calculate user's share of the vault's value (including yield)
+    // stablecoin_value = user_lp_balance * vault_total_value / total_lp_supply
+    let stablecoin_value = if vault_state.total_lp_minted.is_zero() {
+        Uint128::zero()
+    } else {
+        lp_balance
+            .checked_multiply_ratio(vault_total_value, vault_state.total_lp_minted)
+            .map_err(|e| cosmwasm_std::StdError::generic_err(format!("Multiply ratio error: {}", e)))?
+    };
 
     Ok(UserInfoResponse {
         address: user_addr,
@@ -581,6 +706,7 @@ mod tests {
             description: Some("LP Token for Liquidity Pool".to_string()),
             admin: None,
             withdrawal_delay_seconds: 172_800, // 2 days
+            yield_contract_address: "zig188jwfa9tcxed2wdav5faj6vslp0vsq5lnu9yyn0wwg75fmkxv5ussdw5nu".to_string(),
         };
         let info = mock_info("creator", &[]);
         let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
@@ -609,6 +735,7 @@ mod tests {
             description: None,
             admin: None,
             withdrawal_delay_seconds: 120, // 2 minutes (minimum)
+            yield_contract_address: "zig188jwfa9tcxed2wdav5faj6vslp0vsq5lnu9yyn0wwg75fmkxv5ussdw5nu".to_string(),
         };
         let info = mock_info("creator", &[]);
         let err = instantiate(deps.as_mut(), mock_env(), info.clone(), msg).unwrap_err();
@@ -625,6 +752,7 @@ mod tests {
             description: None,
             admin: None,
             withdrawal_delay_seconds: 120, // 2 minutes (minimum)
+            yield_contract_address: "zig188jwfa9tcxed2wdav5faj6vslp0vsq5lnu9yyn0wwg75fmkxv5ussdw5nu".to_string(),
         };
         let err = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap_err();
         assert!(matches!(err, ContractError::InvalidSubdenom { .. }));
@@ -643,6 +771,7 @@ mod tests {
             description: None,
             admin: None,
             withdrawal_delay_seconds: 120, // 2 minutes (minimum)
+            yield_contract_address: "zig188jwfa9tcxed2wdav5faj6vslp0vsq5lnu9yyn0wwg75fmkxv5ussdw5nu".to_string(),
         };
         let info = mock_info("creator", &[]);
         let err = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap_err();
@@ -664,6 +793,7 @@ mod tests {
             description: None,
             admin: None,
             withdrawal_delay_seconds: 100, // Too short (< 120)
+            yield_contract_address: "zig188jwfa9tcxed2wdav5faj6vslp0vsq5lnu9yyn0wwg75fmkxv5ussdw5nu".to_string(),
         };
         let info = mock_info("creator", &[]);
         let err = instantiate(deps.as_mut(), mock_env(), info.clone(), msg).unwrap_err();
@@ -680,6 +810,7 @@ mod tests {
             description: None,
             admin: None,
             withdrawal_delay_seconds: 10_000_000, // Too long
+            yield_contract_address: "zig188jwfa9tcxed2wdav5faj6vslp0vsq5lnu9yyn0wwg75fmkxv5ussdw5nu".to_string(),
         };
         let err = instantiate(deps.as_mut(), mock_env(), info.clone(), msg).unwrap_err();
         assert!(matches!(err, ContractError::InvalidWithdrawalDelay { .. }));
@@ -695,6 +826,7 @@ mod tests {
             description: None,
             admin: None,
             withdrawal_delay_seconds: 120, // Exactly at minimum - valid
+            yield_contract_address: "zig188jwfa9tcxed2wdav5faj6vslp0vsq5lnu9yyn0wwg75fmkxv5ussdw5nu".to_string(),
         };
         let res = instantiate(deps.as_mut(), mock_env(), info.clone(), msg).unwrap();
         assert_eq!(1, res.messages.len());
@@ -716,6 +848,7 @@ mod tests {
             description: None,
             admin: None,
             withdrawal_delay_seconds: 86400, // 1 day - valid
+            yield_contract_address: "zig188jwfa9tcxed2wdav5faj6vslp0vsq5lnu9yyn0wwg75fmkxv5ussdw5nu".to_string(),
         };
         let res = instantiate(deps2.as_mut(), mock_env(), info, msg).unwrap();
         assert_eq!(1, res.messages.len());
@@ -743,6 +876,7 @@ mod tests {
             description: None,
             admin: None,
             withdrawal_delay_seconds: custom_delay,
+            yield_contract_address: "zig188jwfa9tcxed2wdav5faj6vslp0vsq5lnu9yyn0wwg75fmkxv5ussdw5nu".to_string(),
         };
         let info = mock_info("creator", &[]);
         instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();

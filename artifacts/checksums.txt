@@ -1,1 +1,1 @@
-9498d5dc604050ec4bd5ce0b06be0e963663f8ac08c09a487b8a58dffb7e2e7d  liquidity_protocol.wasm
+a6d34c5871a43a71534bad60db82eeb89b3b8c5375d1e896a9430cc1b710af60  liquidity_protocol.wasm

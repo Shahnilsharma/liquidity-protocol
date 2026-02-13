@@ -51,4 +51,16 @@ pub enum ContractError {
 
     #[error("Invalid withdrawal delay - must be between {min} and {max} seconds")]
     InvalidWithdrawalDelay { min: u64, max: u64 },
+
+    #[error("Yield contract error - {reason}")]
+    YieldContractError { reason: String },
+
+    #[error("Invalid yield contract response - {reason}")]
+    InvalidYieldResponse { reason: String },
+
+    #[error("Insufficient liquidity in yield contract - cannot withdraw requested amount")]
+    InsufficientYieldLiquidity {},
+
+    #[error("Zero shares received from yield contract")]
+    ZeroSharesReceived {},
 }

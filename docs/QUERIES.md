@@ -123,24 +123,28 @@ zigchaind query wasm contract-state smart \
 
 ```json
 {
-  "total_stablecoin_deposited": "52150",
-  "total_lp_supply": "52150"
+  "total_yield_shares": "50000",
+  "total_stablecoin_value": "52150",
+  "total_lp_supply": "50000",
+  "price_per_share": "1.043000"
 }
 ```
 
 ### Field Descriptions
 
-- `total_stablecoin_deposited` (string) - Total amount of stablecoin currently in vault
+- `total_yield_shares` (string) - Total shares held in the external yield-generating protocol
+- `total_stablecoin_value` (string) - Current total value including accrued yield (totalAssets)
 - `total_lp_supply` (string) - Total amount of LP tokens minted and in circulation
+- `price_per_share` (string) - Current value of 1 LP token in stablecoin (increases as yield accrues)
 
-### Critical Verification
+### Yield Mechanism
 
-In a healthy 1:1 vault:
+In a yield-generating vault:
 ```
-total_stablecoin_deposited == total_lp_supply
+price_per_share = total_stablecoin_value / total_lp_supply
 ```
 
-If these values don't match, there's a critical issue with the contract that requires immediate investigation.
+As yield accrues from the external protocol, `total_stablecoin_value` increases while `total_lp_supply` stays constant, causing `price_per_share` to rise. This means LP token holders gain value over time without needing to claim anything.
 
 ### Use Cases
 
@@ -399,9 +403,14 @@ zigchaind query wasm contract-state smart $VAULT_ADDRESS \
   "{\"user_info\":{\"address\":\"$MY_ADDR\"}}" --node $NODE --output json | jq '.data.lp_balance'
 
 echo ""
-echo "3. Vault liquidity available:"
+echo "3. Vault total value (including yield):"
 zigchaind query wasm contract-state smart $VAULT_ADDRESS \
-  '{"vault_info":{}}' --node $NODE --output json | jq '.data.total_stablecoin_deposited'
+  '{"vault_info":{}}' --node $NODE --output json | jq '.data.total_stablecoin_value'
+
+echo ""
+echo "4. Current LP token price:"
+zigchaind query wasm contract-state smart $VAULT_ADDRESS \
+  '{"vault_info":{}}' --node $NODE --output json | jq '.data.price_per_share'
 
 echo ""
 echo "Make sure:"
@@ -451,8 +460,9 @@ async function getVaultState() {
   );
   
   return {
-    tvl: vaultInfo.total_stablecoin_deposited,
-    lpSupply: vaultInfo.total_lp_supply
+    tvl: vaultInfo.total_stablecoin_value,
+    lpSupply: vaultInfo.total_lp_supply,
+    pricePerShare: vaultInfo.price_per_share
   };
 }
 
@@ -495,10 +505,11 @@ while true; do
   VAULT_INFO=$(zigchaind query wasm contract-state smart $VAULT_ADDRESS \
     '{"vault_info":{}}' --node $NODE --output json | jq '.data')
   
-  TVL=$(echo $VAULT_INFO | jq -r '.total_stablecoin_deposited')
+  TVL=$(echo $VAULT_INFO | jq -r '.total_stablecoin_value')
   LP_SUPPLY=$(echo $VAULT_INFO | jq -r '.total_lp_supply')
+  PRICE=$(echo $VAULT_INFO | jq -r '.price_per_share')
   
-  echo "$TIMESTAMP | TVL: $TVL | LP Supply: $LP_SUPPLY" | tee -a $LOG_FILE
+  echo "$TIMESTAMP | TVL: $TVL | LP Supply: $LP_SUPPLY | Price: $PRICE" | tee -a $LOG_FILE
   
   # Check invariant
   if [ "$TVL" != "$LP_SUPPLY" ]; then
@@ -543,8 +554,9 @@ class VaultQueryClient:
         """Monitor TVL with alerts"""
         while True:
             vault_info = self.get_vault_info()
-            tvl = vault_info['data']['total_stablecoin_deposited']
+            tvl = vault_info['data']['total_stablecoin_value']
             lp_supply = vault_info['data']['total_lp_supply']
+            price_per_share = vault_info['data']['price_per_share']
             
             print(f"TVL: {tvl}, LP Supply: {lp_supply}")
             

@@ -11,7 +11,7 @@ A **production-grade CosmWasm vault contract** with **time-locked withdrawals** 
 - **Range**: 120 seconds (2 min) to 2,592,000 seconds (30 days)
 - Protects against flash loan attacks, reentrancy, and unauthorized withdrawals
 
-### **Security Hardening** (See [SECURITY_AUDIT.md](SECURITY_AUDIT.md))
+### **Security Hardening**
 - ✅ **Reentrancy Protection**: Checks-Effects-Interactions pattern
 - ✅ **Integer Overflow Protection**: Checked arithmetic throughout
 - ✅ **Access Control**: Storage-based withdrawal ownership
@@ -338,7 +338,6 @@ The **withdrawal_delay_seconds** parameter is **REQUIRED** and **IMMUTABLE** aft
 
 **Range:** 120 (2 min) to 2,592,000 (30 days) - **REQUIRED FIELD**
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for comprehensive deployment guide.
 
 ### Prerequisites
 - Docker (for WASM optimization)
@@ -347,23 +346,48 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for comprehensive deployment guide.
 
 ### Quick Start
 
-#### 1. Optimize WASM
+#### 1. Optimize WASM 
+you can SKIP to [Uploading](#2-upload-contract) by using [optimized wasm](./artifacts/liquidity_protocol.wasm)
+or SKIP to [Instantiate](#3-instantiate-with-withdrawal-delay) by using uploaded CODE_ID=1992
+
 ```bash
-docker run --rm -v "$(pwd)":/code cosmwasm/optimizer:0.17.0
+docker run --rm -v "$(pwd)":/code \
+  --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target \
+  --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry \
+  cosmwasm/workspace-optimizer:0.17.0
 ```
 This creates `artifacts/liquidity_protocol.wasm` (~175 KB)
 
 #### 2. Upload Contract
 ```bash
+# Set Enviroment (for testnet)
+export RPC_URL=https://public-zigchain-testnet-rpc.numia.xyz
+export CHAIN_ID=zig-test-2
+export WALLET=<your_wallet>
+
 zigchaind tx wasm store artifacts/liquidity_protocol.wasm \
-  --from your_wallet \
-  --node <RPC_URL> \
-  --chain-id <CHAIN_ID> \
-  --gas auto --gas-adjustment 1.5 \
+  --from $WALLET  \
+  --node $RPC_URL \
+  --chain-id $CHAIN_ID \
+  --gas auto --gas-adjustment 1.5 --gas-prices 0.0025uzig\
   -y
 
 # Get code_id from transaction
-zigchaind query tx <TX_HASH>
+ export TX_HASH=<TX_HASH>
+
+ zigchaind q tx $TX_HASH \
+   --chain-id zig-test-2 \
+   --node $NODE \
+   -o json \
+ | jq -r '
+     .events[]
+     | select(.type == "instantiate")
+     | .attributes[]
+     | select(.key == "_contract_address")
+     | .value
+   ' | head -n1
+ 
+ export CODE_ID =<code_id>
 ```
 
 #### 3. Instantiate with Withdrawal Delay
@@ -379,6 +403,7 @@ zigchaind tx wasm instantiate $CODE_ID '{
 }' \
   --from zig1staghsausa8tee05uelp8cjklv2qpuke5gmna6 \
   --amount 100000000uzig \
+  --admin zig1staghsausa8tee05uelp8cjklv2qpuke5gmna6 \
   --label "zigchain-vault-v1" \
   --node https://public-zigchain-testnet-rpc.numia.xyz \
   --chain-id zig-test-2 \
@@ -396,7 +421,19 @@ zigchaind tx wasm instantiate $CODE_ID '{
 #### 4. Save Configuration
 ```bash
 # Get contract address from instantiate transaction
-zigchaind query tx <TX_HASH>
+export TX_HASH = <tx_hash>
+zigchaind q tx $TX_HASH \
+  --chain-id zig-test-2 \
+  --node https://public-zigchain-testnet-rpc.numia.xyz \
+  -o json \
+| jq -r '
+    .events[]
+    | select(.type == "instantiate")
+    | .attributes[]
+    | select(.key == "_contract_address")
+    | .value
+  ' | head -n1
+
 
 # Save to scripts/vault_addresses.txt
 export VAULT_ADDRESS="zig1..."
@@ -404,15 +441,15 @@ export LP_FULL_DENOM="coin.zig1...vaulttoken"
 export STABLECOIN_DENOM="uzig"
 ```
 
-### Automated Deployment
+<!-- ### Automated Deployment
 
 Use the provided script for guided deployment:
 ```bash
 # Edit scripts/deploy_tokenfactory.sh with your configuration
 ./scripts/deploy_tokenfactory.sh
-```
+``` -->
 
-**The script will prompt for withdrawal delay with recommendations.**
+<!-- **The script will prompt for withdrawal delay with recommendations.** -->
 
 ### Using the Interaction Script
 ```bash

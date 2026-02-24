@@ -129,9 +129,10 @@ pub fn execute(
         ExecuteMsg::AdminWithdraw { amount } => {
             execute_admin_withdraw(deps, env, info, amount)
         }
-        ExecuteMsg::AdminDepositYield {} => {
-            execute_admin_deposit_yield(deps, env, info)
-        }
+        ExecuteMsg::AdminDepositYield {
+            principal_amount,
+            yield_amount,
+        } => execute_admin_deposit_yield(deps, env, info, principal_amount, yield_amount),
     }
 }
 
@@ -569,6 +570,8 @@ fn execute_admin_deposit_yield(
     deps: DepsMut,
     _env: Env,
     info: MessageInfo,
+    principal_amount: Uint128,
+    yield_amount: Uint128,
 ) -> Result<Response, ContractError> {
     let config = CONFIG.load(deps.storage)?;
 
@@ -584,16 +587,32 @@ fn execute_admin_deposit_yield(
         )));
     }
 
-    let yield_coin = info
+    let received_coin = info
         .funds
         .iter()
         .find(|coin| coin.denom == config.stablecoin_denom)
         .ok_or(ContractError::NoStablecoinSent {})?;
 
-    let yield_amount = yield_coin.amount;
+    let total_received = received_coin.amount;
 
-    // Validate non-zero amount
-    if yield_amount.is_zero() {
+    // Validate amounts
+    let expected_total = principal_amount
+        .checked_add(yield_amount)
+        .map_err(|_| ContractError::OverflowError {
+            operation: "principal + yield".to_string(),
+        })?;
+
+    if total_received != expected_total {
+        return Err(ContractError::Std(cosmwasm_std::StdError::generic_err(
+            format!(
+                "Amount mismatch: sent {} but declared principal {} + yield {} = {}",
+                total_received, principal_amount, yield_amount, expected_total
+            ),
+        )));
+    }
+
+    // Principal can be zero (pure yield deposit) but both cannot be zero
+    if principal_amount.is_zero() && yield_amount.is_zero() {
         return Err(ContractError::InvalidZeroAmount {});
     }
 
@@ -602,8 +621,9 @@ fn execute_admin_deposit_yield(
 
     let old_total = vault_state.total_deposited;
 
-    // Update vault value by adding the deposited yield
-    // This automatically increases price per share for all LP holders
+    // CRITICAL: Only add yield_amount to total_deposited
+    // Principal is just returning funds that admin withdrew earlier
+    // Adding principal would double-count it (it's already in total_deposited from original deposit)
     vault_state.total_deposited = vault_state
         .total_deposited
         .checked_add(yield_amount)
@@ -633,9 +653,11 @@ fn execute_admin_deposit_yield(
     Ok(Response::new()
         .add_attribute("method", "admin_deposit_yield")
         .add_attribute("admin", info.sender)
+        .add_attribute("principal_returned", principal_amount)
         .add_attribute("yield_deposited", yield_amount)
-        .add_attribute("old_total", old_total)
-        .add_attribute("new_total", new_total)
+        .add_attribute("total_received", total_received)
+        .add_attribute("old_total_deposited", old_total)
+        .add_attribute("new_total_deposited", new_total)
         .add_attribute("price_per_share", price_per_share))
 }
 
@@ -1081,24 +1103,27 @@ mod tests {
         assert_eq!(Uint128::new(1000), vault.total_lp_supply);
         assert_eq!("1.000000", vault.price_per_share); // Initial 1:1
 
-        // Admin (creator) deposits 100 uzig as yield (10% yield)
+        // Admin (creator) deposits 100 uzig as pure yield (no principal return)
         let admin_info = mock_info("creator", &coins(100, "uzig"));
         let res = execute(
             deps.as_mut(),
             env.clone(),
             admin_info,
-            ExecuteMsg::AdminDepositYield {},
+            ExecuteMsg::AdminDepositYield {
+                principal_amount: Uint128::zero(),
+                yield_amount: Uint128::new(100),
+            },
         )
         .unwrap();
 
         // Verify response attributes
         assert_eq!("admin_deposit_yield", res.attributes[0].value);
-        assert_eq!("100", res.attributes[2].value); // yield_deposited
-        assert_eq!("1000", res.attributes[3].value); // old_total
-        assert_eq!("1100", res.attributes[4].value); // new_total
-        
-        // Price per share should be 1100/1000 = 1.1
-        assert_eq!("1.100000", res.attributes[5].value);
+        assert_eq!("0", res.attributes[2].value); // principal_returned
+        assert_eq!("100", res.attributes[3].value); // yield_deposited
+        assert_eq!("100", res.attributes[4].value); // total_received
+        assert_eq!("1000", res.attributes[5].value); // old_total_deposited
+        assert_eq!("1100", res.attributes[6].value); // new_total_deposited
+        assert_eq!("1.100000", res.attributes[7].value); // price_per_share
 
         // Verify vault state updated correctly
         let vault_info = query(deps.as_ref(), env.clone(), QueryMsg::VaultInfo {}).unwrap();
@@ -1134,7 +1159,10 @@ mod tests {
             deps.as_mut(),
             env,
             non_admin_info,
-            ExecuteMsg::AdminDepositYield {},
+            ExecuteMsg::AdminDepositYield {
+                principal_amount: Uint128::zero(),
+                yield_amount: Uint128::new(100),
+            },
         )
         .unwrap_err();
 
@@ -1167,7 +1195,10 @@ mod tests {
             deps.as_mut(),
             env,
             admin_info,
-            ExecuteMsg::AdminDepositYield {},
+            ExecuteMsg::AdminDepositYield {
+                principal_amount: Uint128::zero(),
+                yield_amount: Uint128::new(100),
+            },
         )
         .unwrap_err();
 
@@ -1200,7 +1231,10 @@ mod tests {
             deps.as_mut(),
             env,
             admin_info,
-            ExecuteMsg::AdminDepositYield {},
+            ExecuteMsg::AdminDepositYield {
+                principal_amount: Uint128::zero(),
+                yield_amount: Uint128::zero(),
+            },
         )
         .unwrap_err();
 
@@ -1237,7 +1271,10 @@ mod tests {
             deps.as_mut(),
             env.clone(),
             admin_info.clone(),
-            ExecuteMsg::AdminDepositYield {},
+            ExecuteMsg::AdminDepositYield {
+                principal_amount: Uint128::zero(),
+                yield_amount: Uint128::new(50),
+            },
         )
         .unwrap();
 
@@ -1253,7 +1290,10 @@ mod tests {
             deps.as_mut(),
             env.clone(),
             admin_info2,
-            ExecuteMsg::AdminDepositYield {},
+            ExecuteMsg::AdminDepositYield {
+                principal_amount: Uint128::zero(),
+                yield_amount: Uint128::new(100),
+            },
         )
         .unwrap();
 
@@ -1293,13 +1333,17 @@ mod tests {
             deps.as_mut(),
             env.clone(),
             admin_info,
-            ExecuteMsg::AdminDepositYield {},
+            ExecuteMsg::AdminDepositYield {
+                principal_amount: Uint128::zero(),
+                yield_amount: Uint128::new(100),
+            },
         )
         .unwrap();
 
         // Should succeed - total_deposited increases
         assert_eq!("admin_deposit_yield", res.attributes[0].value);
-        assert_eq!("100", res.attributes[2].value);
+        assert_eq!("0", res.attributes[2].value); // principal_returned
+        assert_eq!("100", res.attributes[3].value); // yield_deposited
 
         // Verify vault state
         let vault_info = query(deps.as_ref(), env, QueryMsg::VaultInfo {}).unwrap();

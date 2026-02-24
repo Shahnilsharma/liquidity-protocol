@@ -167,15 +167,18 @@ zigchaind tx wasm execute <CONTRACT> \
 #### 5. Admin Deposit Yield (Admin only)
 **Admin-only**: Deposit yield earned from external protocols directly into vault.
 ```json
-{"admin_deposit_yield": {}}
+{"admin_deposit_yield": {
+  "principal_amount": "0",
+  "yield_amount": "50000"
+}}
 ```
-**Funds Required** - must send stablecoin via `--amount`
+**Funds Required** - must send stablecoin via `--amount` (must equal principal_amount + yield_amount)
 
 **Example:**
 ```bash
-# Admin deposits 50,000 yield from external protocol
+# Admin deposits 50,000 pure yield from external protocol (no principal return)
 zigchaind tx wasm execute <CONTRACT> \
-  '{"admin_deposit_yield":{}}' \
+  '{"admin_deposit_yield":{"principal_amount":"0","yield_amount":"50000"}}' \
   --from admin --amount 50000uzig \
   --node <NODE> --chain-id zig-test-2 -y
 ```
@@ -519,8 +522,9 @@ zigchaind tx wasm execute <CONTRACT> \
 
 **Admin Deposit Yield (return principal + yield):**
 ```bash
+# Returning 1,000,000 principal + 100,000 yield (10% return)
 zigchaind tx wasm execute <CONTRACT> \
-  '{"admin_deposit_yield":{}}' \
+  '{"admin_deposit_yield":{"principal_amount":"1000000","yield_amount":"100000"}}' \
   --from admin_wallet \
   --amount 1100000uzig \
   --gas auto --gas-adjustment 1.5 \
@@ -700,8 +704,13 @@ await client.execute(
   "auto"
 );
 
-// Admin Deposit Yield
-const adminYieldMsg = { admin_deposit_yield: {} };
+// Admin Deposit Yield (returning 1M principal + 100K yield)
+const adminYieldMsg = { 
+  admin_deposit_yield: { 
+    principal_amount: "1000000",
+    yield_amount: "100000"
+  } 
+};
 const yieldFunds = [{ denom: "uzig", amount: "1100000" }];
 await client.execute(
   adminAddress,

@@ -306,7 +306,7 @@ Admin must deposit back via AdminDepositYield
 **Command:**
 ```bash
 zigchaind tx wasm execute $VAULT_ADDRESS \
-  '{"admin_deposit_yield":{}}' \
+  '{"admin_deposit_yield":{"principal_amount":"0","yield_amount":"50000"}}' \
   --from $ADMIN_WALLET \
   --amount 50000uzig \
   --node $NODE \
@@ -316,16 +316,23 @@ zigchaind tx wasm execute $VAULT_ADDRESS \
 
 **Purpose:**
 - **Single-step yield deposit**: Admin sends stablecoin (yield) directly to contract
-- **Automatic accounting**: Contract automatically increases total_deposited
+- **Automatic accounting**: Contract only adds yield_amount to total_deposited
+- **Principal tracking**: Separates returned principal from new yield
 - **No LP tokens minted**: Only increases price per share
 - **All LP holders benefit proportionally**: Yield is distributed through price increase
+
+**Parameters:**
+- `principal_amount`: Funds being returned that were previously withdrawn (not added to total_deposited)
+- `yield_amount`: New yield earned externally (added to total_deposited)
+- `--amount` flag: Must equal `principal_amount + yield_amount`
 
 **How It Works:**
 1. Admin sends stablecoin funds via `--amount` flag
 2. Contract validates admin-only access
-3. Contract adds deposit amount to `total_deposited`
-4. Price per share increases automatically
-5. No LP tokens are created
+3. Contract validates `principal_amount + yield_amount == sent_amount`
+4. Contract adds only `yield_amount` to `total_deposited` (principal already counted)
+5. Price per share increases automatically
+6. No LP tokens are created
 
 **Benefits vs Old Approach:**
 - ✅ Single atomic transaction (was: 2-step process)
@@ -336,8 +343,30 @@ zigchaind tx wasm execute $VAULT_ADDRESS \
 **Validation:**
 - Only admin can call this function
 - Must send exactly one token type (stablecoin)
-- Amount must be > 0
+- `principal_amount + yield_amount` must equal sent amount
+- At least one of `principal_amount` or `yield_amount` must be > 0
 - Uses checked arithmetic (overflow protection)
+- Contract verifies token denomination matches vault stablecoin
+
+**Common Scenarios:**
+
+1. **Pure yield deposit (no prior withdrawal):**
+   ```bash
+   # Admin earned 50K yield without withdrawing principal
+   --amount 50000uzig '{"admin_deposit_yield":{"principal_amount":"0","yield_amount":"50000"}}'
+   ```
+
+2. **Return principal + yield:**
+   ```bash
+   # Admin withdrew 1M, earned 100K yield, returning both (total 1.1M)
+   --amount 1100000uzig '{"admin_deposit_yield":{"principal_amount":"1000000","yield_amount":"100000"}}'
+   ```
+
+3. **Return principal only (no yield earned):**
+   ```bash
+   # Admin withdrew 1M, earned nothing, returning 1M
+   --amount 1000000uzig '{"admin_deposit_yield":{"principal_amount":"1000000","yield_amount":"0"}}'
+   ```
 
 **Example:**
 ```
@@ -421,7 +450,7 @@ Total: 800 ZIG principal + 50 ZIG yield = 850 ZIG
 # Admin sends 50 ZIG yield directly to vault
 # This automatically increases total_deposited and price per share
 zigchaind tx wasm execute $VAULT_ADDRESS \
-  '{"admin_deposit_yield":{}}' \
+  '{"admin_deposit_yield":{"principal_amount":"0","yield_amount":"50"}}' \
   --from admin --amount 50uzig --node $NODE -y
 ```
 

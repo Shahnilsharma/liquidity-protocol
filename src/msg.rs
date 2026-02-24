@@ -56,12 +56,18 @@ pub enum ExecuteMsg {
         /// Amount of stablecoin to withdraw
         amount: Uint128,
     },
-    /// Admin-only: Deposit stablecoin (principal + yield) back to vault
-    /// Admin sends stablecoin directly to contract via info.funds
-    /// Contract automatically increases vault value without minting LP tokens
-    /// This increases price per share and benefits all LP token holders proportionally
-    /// Single atomic operation with on-chain proof
-    AdminDepositYield {},
+    /// Admin-only: Return principal and deposit yield to vault
+    /// Admin sends total funds (principal + yield) via info.funds
+    /// Contract separates them correctly:
+    /// - Principal is returned without changing total_deposited (no price impact)
+    /// - Only yield is added to total_deposited (increases price per share)
+    /// This ensures accurate accounting and proportional yield distribution
+    AdminDepositYield {
+        /// Amount of principal being returned (does NOT increase total_deposited)
+        principal_amount: Uint128,
+        /// Amount of yield earned (DOES increase total_deposited)
+        yield_amount: Uint128,
+    },
 }
 
 /// Query messages

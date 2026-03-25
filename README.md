@@ -858,3 +858,4 @@ zigchaind query bank balances <your_address>
 ---
 
 *For questions or issues, refer to the source code documentation in the `src/` directory or consult the interaction script examples in `scripts/`.*
+b 010

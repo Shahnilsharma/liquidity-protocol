@@ -365,7 +365,7 @@ else
 fi
 
 log_test "Unauthorized Admin Operations (AdminDepositYield by non-admin)"
-TX=$(execute_tx $USER2_WALLET '{"admin_deposit_yield":{}}' "1000000${STABLECOIN_DENOM}")
+TX=$(execute_tx $USER2_WALLET '{"admin_deposit_yield":{"principal_amount":"0","yield_amount":"1000000"}}' "1000000${STABLECOIN_DENOM}")
 STATUS=$(check_tx_success "$TX")
 if [ "$STATUS" = "error" ]; then
     log_pass "Non-admin cannot execute AdminDepositYield"
@@ -503,8 +503,8 @@ else
 fi
 
 # Step 2: Admin deposits back with 10% yield
-log_info "Step 2: Admin deposits back 1,100,000 uzig (original + 10% yield)"
-TX=$(execute_tx $ADMIN_WALLET '{"admin_deposit_yield":{}}' "1100000${STABLECOIN_DENOM}")
+log_info "Step 2: Admin deposits back 1,100,000 uzig (1M principal + 100K yield)"
+TX=$(execute_tx $ADMIN_WALLET '{"admin_deposit_yield":{"principal_amount":"1000000","yield_amount":"100000"}}' "1100000${STABLECOIN_DENOM}")
 STATUS=$(check_tx_success "$TX")
 
 # CRITICAL: Wait for state to propagate after transaction confirmation

@@ -1,0 +1,13 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 005c714b529a0a6b65c6e28ee10e14afd84811a2100d55cde98bbe7e84453532 # shrinks to user_deposit_a = 1000000, user_deposit_b = 1000000, admin_withdraw_pct = 10, return_pct = 10
+cc e50e192a536d27b355c865c634a779a1c63404c66605faee70b02b33a38732e6 # shrinks to actions = [AdminDepositYield { principal: 0, yield_amount: 1 }]
+cc c5327197dcacbc3273b45c86160907e515364ecb637915abdff52f1d9c4dc75f # shrinks to actions = [DepositMaxU128 { user: "user_a" }]
+cc 6c97607a0c45efafcf5febb5eb955235e0202b0564e811e4c7f100ad34efbbf4 # shrinks to actions = [AdminReturnZero, AdminReturnZero, Deposit { user: "user_c", amount: 7058723 }, AdminReturnZero, AdminWithdraw { amount: 1000000 }, WithdrawAll { user: "user_c" }]
+cc ed8270a1e272364648099997594fa77d8a5ce94039af30277b3a2f00a886da03 # shrinks to actions = [Deposit { user: "attacker", amount: 7767033 }, AdminWithdraw { amount: 1000000 }, WithdrawAll { user: "attacker" }, Deposit { user: "user_b", amount: 1000000 }, Deposit { user: "user_a", amount: 1000000 }]
+cc 2bdfa60265bc0c2f76c58bdeb6e4809a0c3713189034d9a3916b8d5971708942 # shrinks to actions = [Deposit { user: "user_a", amount: 3816779 }, Deposit { user: "user_b", amount: 3546311 }, AdminWithdraw { amount: 1016712 }, AdminWithdraw { amount: 7363090 }, WithdrawAll { user: "user_a" }, AdminReturnZero, AdminReturnZero, AdminReturnZero, AdminReturnZero]
+cc e93d0f74cc5e5bfbbf9b8890bdb8103ebe432ac58f770c6b090c063796a73bc2 # shrinks to actions = [Deposit { user: "user_b", amount: 2337169 }, Deposit { user: "user_a", amount: 1000000 }, AdminDepositYield { principal: 817438, yield_amount: 1523898 }, AdminWithdraw { amount: 4861068 }, WithdrawAll { user: "user_a" }]

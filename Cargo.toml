@@ -44,3 +44,5 @@ prost-types = "0.13"
 
 [dev-dependencies]
 cw-multi-test = "2.0.0"
+proptest = "1.4"
+test-case = "3.3"

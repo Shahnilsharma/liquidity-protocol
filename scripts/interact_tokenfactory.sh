@@ -337,13 +337,36 @@ while true; do
                 --node $NODE \
                 --output json | jq '.data'
             
-            read -p "Enter yield amount to deposit: " YIELD_AMOUNT
+            echo ""
+            echo -e "${BLUE}You need to specify:${NC}"
+            echo -e "  ${GREEN}principal_amount${NC}: Previously withdrawn funds being returned (not added to TVL)"
+            echo -e "  ${GREEN}yield_amount${NC}: New yield earned externally (added to TVL)"
+            echo -e "  ${YELLOW}Total sent must equal principal_amount + yield_amount${NC}"
+            echo ""
             
-            echo -e "${BLUE}Depositing yield to vault...${NC}"
+            read -p "Enter principal amount (or 0 if none): " PRINCIPAL_AMOUNT
+            read -p "Enter yield amount: " YIELD_AMOUNT
+            
+            # Calculate total
+            TOTAL_AMOUNT=$((PRINCIPAL_AMOUNT + YIELD_AMOUNT))
+            
+            echo -e "${BLUE}Summary:${NC}"
+            echo -e "  Principal (returning): ${PRINCIPAL_AMOUNT}"
+            echo -e "  Yield (new): ${YIELD_AMOUNT}"
+            echo -e "  Total sending: ${TOTAL_AMOUNT}"
+            echo ""
+            read -p "Confirm? (y/n): " CONFIRM
+            
+            if [ "$CONFIRM" != "y" ]; then
+                echo "Cancelled."
+                continue
+            fi
+            
+            echo -e "${BLUE}Depositing to vault...${NC}"
             TX=$(zigchaind tx wasm execute $LP_POOL_ADDRESS \
-                '{"admin_deposit_yield":{}}' \
+                "{\"admin_deposit_yield\":{\"principal_amount\":\"$PRINCIPAL_AMOUNT\",\"yield_amount\":\"$YIELD_AMOUNT\"}}" \
                 --from $WALLET \
-                --amount "${YIELD_AMOUNT}${STABLECOIN_DENOM}" \
+                --amount "${TOTAL_AMOUNT}${STABLECOIN_DENOM}" \
                 --node $NODE \
                 --chain-id $CHAIN_ID \
                 --gas-prices $GAS_PRICES \
@@ -361,15 +384,19 @@ while true; do
             if [ "$CODE" = "0" ]; then
                 echo -e "${GREEN}✓ Yield deposited successfully!${NC}"
                 
-                # Extract yield info from events
+                # Extract info from events
+                PRINCIPAL_RETURNED=$(echo "$RESULT" | jq -r '.events[] | select(.type=="wasm") | .attributes[] | select(.key=="principal_returned") | .value' | head -1)
                 YIELD_DEPOSITED=$(echo "$RESULT" | jq -r '.events[] | select(.type=="wasm") | .attributes[] | select(.key=="yield_deposited") | .value' | head -1)
+                TOTAL_RECEIVED=$(echo "$RESULT" | jq -r '.events[] | select(.type=="wasm") | .attributes[] | select(.key=="total_received") | .value' | head -1)
                 NEW_TOTAL=$(echo "$RESULT" | jq -r '.events[] | select(.type=="wasm") | .attributes[] | select(.key=="new_total") | .value' | head -1)
                 NEW_PRICE=$(echo "$RESULT" | jq -r '.events[] | select(.type=="wasm") | .attributes[] | select(.key=="price_per_share") | .value' | head -1)
                 
+                echo -e "${BLUE}Principal returned:${NC} $PRINCIPAL_RETURNED"
                 echo -e "${BLUE}Yield deposited:${NC} $YIELD_DEPOSITED"
+                echo -e "${BLUE}Total received:${NC} $TOTAL_RECEIVED"
                 echo -e "${BLUE}New total value:${NC} $NEW_TOTAL"
                 echo -e "${BLUE}New price per share:${NC} $NEW_PRICE"
-                echo -e "${GREEN}All LP token holders benefit proportionally!${NC}"
+                echo -e "${GREEN}All LP token holders benefit from the yield!${NC}"
             else
                 echo -e "${YELLOW}Transaction failed:${NC}"
                 echo "$RESULT" | jq '.code, .raw_log'

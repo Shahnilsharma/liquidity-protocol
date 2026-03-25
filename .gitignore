@@ -2,6 +2,7 @@
 /target
 /schema
 /dlt
+/frontend
 
 # Cargo+Git helper file
 .cargo-ok

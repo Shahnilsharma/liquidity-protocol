@@ -134,6 +134,15 @@ STATE_FILE="${SCRIPT_DIR}/.vault_daemon_state.json"
 LOG_FILE="${SCRIPT_DIR}/vault_daemon.log"
 PID_FILE="${SCRIPT_DIR}/.vault_daemon.pid"
 
+# Strategy / validator configuration
+CONFIG_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/config"
+VALIDATORS_FILE="${CONFIG_DIR}/validators.json"
+
+# Validator allocation tuning
+MAX_VALIDATOR_SHARE_PCT=22      # Hard cap per validator (% of total staked principal)
+MIN_DELEGATION_CHUNK=250000     # Smallest chunk when delegating/redelegating (0.25 ZIG)
+MAX_REBALANCE_REDELEGATIONS=2   # Max redelegations per cycle to limit churn
+
 # ─────────────────────────────── COLOUR CODES ────────────────────────────────
 
 RED='\033[0;31m'
@@ -179,6 +188,7 @@ log() {
         STATE)   colour="$MAGENTA" ;;
         HEADER)  colour="$BOLD$BLUE" ;;
         TXHASH)  colour="$BOLD$GREEN" ;;
+        ALERT)   colour="$BOLD$RED"  ;;
         *)       colour="$NC"       ;;
     esac
     local line="[$ts] [$level] $msg"
@@ -199,6 +209,19 @@ log_error()  { log ERROR "$*"; }
 log_action() { log ACTION "$*"; }
 log_state()  { log STATE  "$*"; }
 log_tx()     { log TXHASH "TX ✓ $*"; }
+log_alert()  { log ALERT "$*"; }
+
+# Validator state (populated each cycle from config + on-chain queries)
+declare -a VALIDATOR_LIST
+declare -A VALIDATOR_WEIGHT
+declare -A VALIDATOR_MAX
+declare -A VALIDATOR_MONIKER
+declare -A VALIDATOR_ACTUAL
+declare -A VALIDATOR_TARGET
+declare -A VALIDATOR_DEFICIT
+declare -A VALIDATOR_JAILED
+TOTAL_VALIDATOR_WEIGHT=0
+TOTAL_DELEGATED_ALL_VALIDATORS=0
 # ─────────────────────────────── PREREQUISITE CHECKS ─────────────────────────
 
 check_prerequisites() {
@@ -211,10 +234,9 @@ check_prerequisites() {
         exit 1
     fi
 
-    # Verify admin key is accessible
     local addr
     addr=$(zigchaind keys show "$ADMIN_KEY" -a 2>/dev/null) || {
-        log_error "Admin key '$ADMIN_KEY' not found in keyring. Make sure 'newaddmin' is loaded."
+        log_error "Admin key '$ADMIN_KEY' not found in keyring. Make sure it is imported."
         exit 1
     }
     if [[ "$addr" != "$ADMIN_ADDR" ]]; then
@@ -222,30 +244,8 @@ check_prerequisites() {
         ADMIN_ADDR="$addr"
     fi
     log_info "Admin address verified: $ADMIN_ADDR"
-}
 
-# ─────────────────────────────── STATE FILE ──────────────────────────────────
-# The state file keeps daemon-side memory between cycles so we detect deltas.
-# Schema:
-#   last_total_deposited          – last seen vault total_deposited (string, uzig)
-#   last_total_pending            – last seen vault total_pending_withdrawals (string)
-#   last_reward_collection_epoch  – unix epoch of last reward harvest
-#   pending_unbondings            – JSON array of {principal, initiated_epoch}
-#   staked_principal              – total uzig currently delegated by admin (string)
-
-init_state() {
-    if [[ ! -f "$STATE_FILE" ]]; then
-        log_info "Initialising state file at $STATE_FILE"
-        cat > "$STATE_FILE" <<'EOF'
-{
-  "last_total_deposited": "0",
-  "last_total_pending": "0",
-  "last_reward_collection_epoch": 0,
-  "pending_unbondings": [],
-  "staked_principal": "0"
-}
-EOF
-    fi
+    ensure_validators_file
 }
 
 state_get() { jq -r ".$1 // empty" "$STATE_FILE" 2>/dev/null; }
@@ -297,6 +297,194 @@ state_pop_completed_unbondings() {
     tmpfile=$(mktemp)
     jq --argjson kept "$kept_json" '.pending_unbondings = $kept' \
         "$STATE_FILE" > "$tmpfile" && mv "$tmpfile" "$STATE_FILE"
+}
+
+# ─────────────────────────────── VALIDATOR CONFIG ───────────────────────────
+
+ensure_validators_file() {
+    if [[ ! -f "$VALIDATORS_FILE" ]]; then
+        log_error "Validator allowlist not found: $VALIDATORS_FILE"
+        exit 1
+    fi
+}
+
+load_validator_config() {
+    ensure_validators_file
+    VALIDATOR_LIST=()
+    TOTAL_VALIDATOR_WEIGHT=0
+    while IFS= read -r entry; do
+        local operator weight max_pct moniker
+        operator=$(echo "$entry" | jq -r '.operator_address // empty')
+        weight=$(echo "$entry" | jq -r '.weight_pct // 0')
+        max_pct=$(echo "$entry" | jq -r '.max_pct // 0')
+        moniker=$(echo "$entry" | jq -r '.moniker // "unknown"')
+        [[ -z "$operator" ]] && continue
+        VALIDATOR_LIST+=("$operator")
+        VALIDATOR_WEIGHT["$operator"]="$weight"
+        if (( max_pct > 0 )); then
+            VALIDATOR_MAX["$operator"]="$max_pct"
+        else
+            VALIDATOR_MAX["$operator"]="$MAX_VALIDATOR_SHARE_PCT"
+        fi
+        VALIDATOR_MONIKER["$operator"]="$moniker"
+        TOTAL_VALIDATOR_WEIGHT=$(( TOTAL_VALIDATOR_WEIGHT + weight ))
+    done < <(jq -c '.[]' "$VALIDATORS_FILE")
+
+    if [[ ${#VALIDATOR_LIST[@]} -eq 0 || $TOTAL_VALIDATOR_WEIGHT -le 0 ]]; then
+        log_error "Validator allowlist is empty or invalid"
+        exit 1
+    fi
+}
+
+refresh_validator_chain_state() {
+    TOTAL_DELEGATED_ALL_VALIDATORS=0
+    local rpc_failed=false
+    for operator in "${VALIDATOR_LIST[@]}"; do
+        local delegation val_info amount jailed status
+        delegation=$(zigchaind query staking delegation "$ADMIN_ADDR" "$operator" \
+            --node "$NODE" --output json 2>/dev/null)
+        if [[ -z "$delegation" ]]; then
+            log_alert "RPC failure while querying delegation for $operator"
+            rpc_failed=true
+            amount=0
+        else
+            amount=$(echo "$delegation" | jq -r '.delegation_response.balance.amount // "0"')
+        fi
+        amount=${amount:-0}
+        VALIDATOR_ACTUAL["$operator"]="$amount"
+        TOTAL_DELEGATED_ALL_VALIDATORS=$(( TOTAL_DELEGATED_ALL_VALIDATORS + amount ))
+
+        val_info=$(zigchaind query staking validator "$operator" --node "$NODE" --output json 2>/dev/null)
+        if [[ -z "$val_info" ]]; then
+            log_alert "RPC failure while querying validator info for $operator"
+            rpc_failed=true
+            VALIDATOR_JAILED["$operator"]="unknown"
+        else
+            jailed=$(echo "$val_info" | jq -r '.jailed // false')
+            status=$(echo "$val_info" | jq -r '.status // "BOND_STATUS_UNSPECIFIED"')
+            VALIDATOR_JAILED["$operator"]="$jailed"
+            if [[ "$jailed" == "true" || "$status" != "BOND_STATUS_BONDED" ]]; then
+                log_alert "Validator ${VALIDATOR_MONIKER[$operator]} ($operator) is jailed or inactive (status=$status)."
+            fi
+        fi
+    done
+
+    if [[ "$rpc_failed" == "true" ]]; then
+        return 1
+    fi
+    return 0
+}
+
+compute_validator_targets() {
+    local reference_total="$1"
+    if (( TOTAL_VALIDATOR_WEIGHT <= 0 )); then
+        return
+    fi
+    for operator in "${VALIDATOR_LIST[@]}"; do
+        local weight=${VALIDATOR_WEIGHT[$operator]:-0}
+        local target=$(( reference_total * weight / TOTAL_VALIDATOR_WEIGHT ))
+        VALIDATOR_TARGET["$operator"]="$target"
+        local actual=${VALIDATOR_ACTUAL[$operator]:-0}
+        VALIDATOR_DEFICIT["$operator"]=$(( target - actual ))
+    done
+}
+
+select_underweight_validator() {
+    local projected_total="$1"
+    local best=""
+    local best_deficit=0
+    if (( TOTAL_VALIDATOR_WEIGHT <= 0 )); then
+        echo ""
+        return
+    fi
+    for operator in "${VALIDATOR_LIST[@]}"; do
+        [[ "${VALIDATOR_JAILED[$operator]}" == "true" ]] && continue
+        local weight=${VALIDATOR_WEIGHT[$operator]:-0}
+        local target=$(( projected_total * weight / TOTAL_VALIDATOR_WEIGHT ))
+        local actual=${VALIDATOR_ACTUAL[$operator]:-0}
+        local deficit=$(( target - actual ))
+        if (( deficit > best_deficit )); then
+            best_deficit=$deficit
+            best="$operator"
+        fi
+    done
+    if (( best_deficit < MIN_DELEGATION_CHUNK )); then
+        echo ""
+    else
+        echo "$best"
+    fi
+}
+
+select_unbond_source() {
+    local best=""
+    local best_amount=0
+    for operator in "${VALIDATOR_LIST[@]}"; do
+        local actual=${VALIDATOR_ACTUAL[$operator]:-0}
+        if (( actual > best_amount )); then
+            best_amount=$actual
+            best="$operator"
+        fi
+    done
+    echo "$best"
+}
+
+delegate_surplus_to_validators() {
+    local stake_budget="$1"
+    if (( stake_budget < MIN_STAKE_AMOUNT )); then
+        return
+    fi
+
+    local projected_total=$(( TOTAL_DELEGATED_ALL_VALIDATORS + stake_budget ))
+    for operator in "${VALIDATOR_LIST[@]}"; do
+        local weight=${VALIDATOR_WEIGHT[$operator]:-0}
+        local actual=${VALIDATOR_ACTUAL[$operator]:-0}
+        local target=$(( projected_total * weight / TOTAL_VALIDATOR_WEIGHT ))
+        local deficit=$(( target - actual ))
+        if (( deficit >= MIN_DELEGATION_CHUNK )); then
+            local amount=$(( deficit < stake_budget ? deficit : stake_budget ))
+            if (( amount >= MIN_DELEGATION_CHUNK )); then
+                stake_to_validator "$operator" "$amount"
+                stake_budget=$(( stake_budget - amount ))
+            fi
+        fi
+        (( stake_budget < MIN_DELEGATION_CHUNK )) && break
+    done
+}
+
+rebalance_validator_caps() {
+    local redelegations=0
+    local total=$TOTAL_DELEGATED_ALL_VALIDATORS
+    (( total == 0 )) && return
+
+    for operator in "${VALIDATOR_LIST[@]}"; do
+        local actual=${VALIDATOR_ACTUAL[$operator]:-0}
+        local max_pct=${VALIDATOR_MAX[$operator]:-$MAX_VALIDATOR_SHARE_PCT}
+        local share_bp=0
+        if (( total > 0 )); then
+            share_bp=$(( actual * 10000 / total ))
+        fi
+        local max_bp=$(( max_pct * 100 ))
+        if (( share_bp > max_bp )); then
+            local allowed=$(( total * max_bp / 10000 ))
+            local excess=$(( actual - allowed ))
+            if (( excess >= MIN_DELEGATION_CHUNK && redelegations < MAX_REBALANCE_REDELEGATIONS )); then
+                local destination
+                destination=$(select_underweight_validator "$total")
+                if [[ -z "$destination" || "$destination" == "$operator" ]]; then
+                    continue
+                fi
+                local amount=$(( excess - (excess % MIN_DELEGATION_CHUNK) ))
+                if (( amount < MIN_DELEGATION_CHUNK )); then
+                    amount=$MIN_DELEGATION_CHUNK
+                fi
+                if redelegate_between_validators "$operator" "$destination" "$amount"; then
+                    VALIDATOR_ACTUAL["$operator"]=$(( actual - amount ))
+                    VALIDATOR_ACTUAL["$destination"]=$(( ${VALIDATOR_ACTUAL[$destination]:-0} + amount ))
+                    redelegations=$(( redelegations + 1 ))
+                fi
+            fi
+        fi
+    done
 }
 
 # ─────────────────────────────── LOCK (single instance) ──────────────────────
@@ -417,30 +605,21 @@ query_admin_balance() {
         '(.balances // []) | map(select(.denom==$d)) | .[0].amount // "0"' 2>/dev/null || echo "0"
 }
 
-# Amount currently delegated to validator by admin
-query_delegated_amount() {
-    zigchaind query staking delegation "$ADMIN_ADDR" "$VALIDATOR_ADDR" \
-        --node "$NODE" --output json 2>/dev/null | \
-        jq -r '.delegation_response.balance.amount // "0"' 2>/dev/null || echo "0"
-}
-
-# All unbonding delegation entries for admin → returns JSON array of entries
-query_unbonding_delegations() {
-    zigchaind query staking unbonding-delegation "$ADMIN_ADDR" "$VALIDATOR_ADDR" \
-        --node "$NODE" --output json 2>/dev/null | \
-        jq -c '.unbond.entries // []' 2>/dev/null || echo "[]"
-}
-
-# Pending staking rewards (in uzig, truncated to integer)
+# Pending staking rewards (sum across all validators, integer)
 query_pending_rewards() {
-    local rewards_json amount
-    rewards_json=$(zigchaind query distribution rewards "$ADMIN_ADDR" "$VALIDATOR_ADDR" \
-        --node "$NODE" --output json 2>/dev/null)
-    amount=$(echo "$rewards_json" | jq -r \
-        --arg d "$STABLECOIN_DENOM" \
-        '(.rewards // []) | map(select(.denom==$d)) | .[0].amount // "0"' 2>/dev/null | \
-        awk -F'.' '{print ($1 == "" ? "0" : $1)}')
-    echo "${amount:-0}"
+    local total=0
+    for operator in "${VALIDATOR_LIST[@]}"; do
+        local rewards_json amount
+        rewards_json=$(zigchaind query distribution rewards "$ADMIN_ADDR" "$operator" \
+            --node "$NODE" --output json 2>/dev/null)
+        amount=$(echo "$rewards_json" | jq -r \
+            --arg d "$STABLECOIN_DENOM" \
+            '(.rewards // []) | map(select(.denom==$d)) | .[0].amount // "0"' 2>/dev/null | \
+            awk -F'.' '{print ($1 == "" ? "0" : $1)}')
+        amount=${amount:-0}
+        total=$(( total + amount ))
+    done
+    echo "$total"
 }
 
 # Get unbonding time from chain params.
@@ -481,11 +660,14 @@ query_unbonding_time() {
 print_status() {
     log_header "VAULT DAEMON STATUS"
 
-    local vault_info vault_balance admin_balance delegated pending_rewards
+    load_validator_config
+    refresh_validator_chain_state || log_alert "Validator data incomplete (RPC failure)"
+
+    local vault_info vault_balance admin_balance pending_rewards delegated
     vault_info=$(query_vault_info)
     vault_balance=$(query_vault_bank_balance | head -1)
     admin_balance=$(query_admin_balance)
-    delegated=$(query_delegated_amount)
+    delegated=$TOTAL_DELEGATED_ALL_VALIDATORS
     pending_rewards=$(query_pending_rewards)
 
     local total_deposited total_lp pending_withdrawals price
@@ -505,7 +687,7 @@ print_status() {
     log_state "── ADMIN WALLET ─────────────────────────────"
     log_state "  Address          : $ADMIN_ADDR"
     log_state "  Balance          : $admin_balance $STABLECOIN_DENOM"
-    log_state "  Staked           : $delegated $STABLECOIN_DENOM"
+    log_state "  Delegated        : $delegated $STABLECOIN_DENOM"
     log_state "  Pending rewards  : $pending_rewards $STABLECOIN_DENOM"
     log_state ""
     log_state "── LOCAL STATE ──────────────────────────────"
@@ -516,19 +698,37 @@ print_status() {
     log_state "  pending unbondings:"
     jq -r '.pending_unbondings[] | "    amount=\(.principal) uzig, initiated=\(.initiated_epoch | todate)"' \
         "$STATE_FILE" 2>/dev/null || true
+
+    log_state ""
+    log_state "── VALIDATOR ALLOCATION ─────────────────────"
+    if (( delegated == 0 )); then
+        log_state "  No active delegations yet."
+    else
+        for operator in "${VALIDATOR_LIST[@]}"; do
+            local actual=${VALIDATOR_ACTUAL[$operator]:-0}
+            local weight=${VALIDATOR_WEIGHT[$operator]:-0}
+            local share_pct=0
+            (( delegated > 0 )) && share_pct=$(( actual * 10000 / delegated ))
+            local share_fmt
+            share_fmt=$(awk -v x=$share_pct 'BEGIN {printf "%.2f", x/100}')
+            log_state "  ${VALIDATOR_MONIKER[$operator]} ($operator) : ${actual} uzig | share=${share_fmt}% target=${weight}%"
+        done
+    fi
 }
 
 # ─────────────────────────────── CORE ACTION: STAKE ──────────────────────────
 
-do_stake() {
-    local amount="$1"
+stake_to_validator() {
+    local validator="$1"
+    local amount="$2"
 
     if (( amount < MIN_STAKE_AMOUNT )); then
         log_info "Skipping stake: amount $amount uzig is below minimum $MIN_STAKE_AMOUNT"
         return 0
     fi
 
-    log_action "STAKE: AdminWithdraw $amount uzig from vault → delegate to validator"
+    local moniker="${VALIDATOR_MONIKER[$validator]:-$validator}"
+    log_action "STAKE: AdminWithdraw $amount uzig from vault → delegate to $moniker ($validator)"
 
     # Step 1: AdminWithdraw from vault to admin wallet
     local txhash
@@ -554,8 +754,8 @@ do_stake() {
 
     # Step 2: Delegate to validator
     local stake_txhash
-    stake_txhash=$(submit_tx "delegate $amount uzig to $VALIDATOR_ADDR" \
-        zigchaind tx staking delegate "$VALIDATOR_ADDR" "${amount}${STABLECOIN_DENOM}" \
+    stake_txhash=$(submit_tx "delegate $amount uzig to $validator" \
+        zigchaind tx staking delegate "$validator" "${amount}${STABLECOIN_DENOM}" \
             --from "$ADMIN_KEY" \
             --node "$NODE" \
             --chain-id "$CHAIN_ID" \
@@ -570,14 +770,44 @@ do_stake() {
     cur_staked=$(state_get staked_principal)
     cur_staked=$(( cur_staked + amount ))
     state_set staked_principal "$cur_staked"
-    log_info "Staked $amount uzig. Total tracked staked: $cur_staked uzig"
+    log_info "Staked $amount uzig to $moniker. Total tracked staked: $cur_staked uzig"
+    VALIDATOR_ACTUAL["$validator"]=$(( ${VALIDATOR_ACTUAL[$validator]:-0} + amount ))
+    TOTAL_DELEGATED_ALL_VALIDATORS=$(( TOTAL_DELEGATED_ALL_VALIDATORS + amount ))
+}
+
+delegate_from_admin_balance() {
+    local validator="$1"
+    local amount="$2"
+    local reason="${3:-reconcile}"
+    if (( amount < MIN_DELEGATION_CHUNK )); then
+        log_info "Skipping delegate-from-admin: $amount < MIN_DELEGATION_CHUNK"
+        return 0
+    fi
+    local moniker="${VALIDATOR_MONIKER[$validator]:-$validator}"
+    log_action "DELEGATE: $amount uzig from admin wallet → $moniker ($validator) ($reason)"
+    local txhash
+    txhash=$(submit_tx "delegate-from-admin $amount" \
+        zigchaind tx staking delegate "$validator" "${amount}${STABLECOIN_DENOM}" \
+            --from "$ADMIN_KEY" \
+            --node "$NODE" \
+            --chain-id "$CHAIN_ID" \
+            --gas auto --gas-adjustment "$GAS_ADJUSTMENT" \
+            --gas-prices "$GAS_PRICES") || {
+        log_warn "Delegate-from-admin failed for $validator"
+        return 1
+    }
+    [[ "$txhash" == "DRY_RUN_TX" ]] && return 0
+    VALIDATOR_ACTUAL["$validator"]=$(( ${VALIDATOR_ACTUAL[$validator]:-0} + amount ))
+    TOTAL_DELEGATED_ALL_VALIDATORS=$(( TOTAL_DELEGATED_ALL_VALIDATORS + amount ))
+    return 0
 }
 
 # ─────────────────────────────── CORE ACTION: UNBOND ─────────────────────────
 
-do_unbond() {
-    local amount="$1"
-    local reason="${2:-withdrawal_request}"
+do_unbond_from_validator() {
+    local validator="$1"
+    local amount="$2"
+    local reason="${3:-withdrawal_request}"
 
     if (( amount < MIN_UNBOND_AMOUNT )); then
         log_info "Skipping unbond: $amount uzig below minimum $MIN_UNBOND_AMOUNT"
@@ -586,7 +816,7 @@ do_unbond() {
 
     # Don't unbond more than what's delegated
     local delegated
-    delegated=$(query_delegated_amount)
+    delegated=$(zigchaind query staking delegation "$ADMIN_ADDR" "$validator" --node "$NODE" --output json 2>/dev/null | jq -r '.delegation_response.balance.amount // "0"' 2>/dev/null || echo "0")
     if (( amount > delegated )); then
         log_warn "Requested to unbond $amount but only $delegated is delegated. Capping."
         amount="$delegated"
@@ -596,11 +826,12 @@ do_unbond() {
         return 0
     fi
 
-    log_action "UNBOND: initiating unbond of $amount uzig from $VALIDATOR_ADDR (reason: $reason)"
+    local moniker="${VALIDATOR_MONIKER[$validator]:-$validator}"
+    log_action "UNBOND: initiating unbond of $amount uzig from $moniker ($validator) (reason: $reason)"
 
     local txhash
     txhash=$(submit_tx "unbond $amount uzig ($reason)" \
-        zigchaind tx staking unbond "$VALIDATOR_ADDR" "${amount}${STABLECOIN_DENOM}" \
+        zigchaind tx staking unbond "$validator" "${amount}${STABLECOIN_DENOM}" \
             --from "$ADMIN_KEY" \
             --node "$NODE" \
             --chain-id "$CHAIN_ID" \
@@ -618,6 +849,66 @@ do_unbond() {
         state_set staked_principal "$cur_staked"
         log_info "Unbonding started for $amount uzig. Tracked staked: $cur_staked"
     fi
+}
+
+unbond_for_liquidity() {
+    local amount="$1"
+    local reason="${2:-liquidity_shortfall}"
+    local remaining="$amount"
+
+    while (( remaining >= MIN_UNBOND_AMOUNT )); do
+        local source
+        source=$(select_unbond_source)
+        [[ -z "$source" ]] && break
+        local available=${VALIDATOR_ACTUAL[$source]:-0}
+        (( available <= 0 )) && break
+        local chunk=$(( remaining < available ? remaining : available ))
+        chunk=$(( chunk - (chunk % MIN_UNBOND_AMOUNT) ))
+        if (( chunk < MIN_UNBOND_AMOUNT )); then
+            chunk=$MIN_UNBOND_AMOUNT
+        fi
+        chunk=$(( chunk > available ? available : chunk ))
+        do_unbond_from_validator "$source" "$chunk" "$reason"
+        VALIDATOR_ACTUAL["$source"]=$(( available - chunk ))
+        remaining=$(( remaining - chunk ))
+    done
+
+    if (( remaining > 0 )); then
+        log_alert "Unable to unbond full shortfall ($amount uzig). Remaining unmet: $remaining uzig"
+    fi
+}
+
+redelegate_between_validators() {
+    local src="$1"
+    local dst="$2"
+    local amount="$3"
+
+    if [[ -z "$src" || -z "$dst" || "$src" == "$dst" ]]; then
+        return 1
+    fi
+
+    local src_moniker="${VALIDATOR_MONIKER[$src]:-$src}"
+    local dst_moniker="${VALIDATOR_MONIKER[$dst]:-$dst}"
+    log_action "REDELEGATE: $amount uzig from $src_moniker → $dst_moniker"
+
+    local txhash
+    txhash=$(submit_tx "redelegate $amount uzig from $src to $dst" \
+        zigchaind tx staking redelegate "$src" "$dst" "${amount}${STABLECOIN_DENOM}" \
+            --from "$ADMIN_KEY" \
+            --node "$NODE" \
+            --chain-id "$CHAIN_ID" \
+            --gas auto --gas-adjustment "$GAS_ADJUSTMENT" \
+            --gas-prices "$GAS_PRICES") || {
+        log_warn "Redelegation failed between $src and $dst"
+        return 1
+    }
+
+    if [[ "$txhash" == "DRY_RUN_TX" ]]; then
+        return 0
+    fi
+
+    log_info "Redelegation submitted for $amount uzig"
+    return 0
 }
 
 # ─────────────────────────────── CORE ACTION: DEPOSIT YIELD ──────────────────

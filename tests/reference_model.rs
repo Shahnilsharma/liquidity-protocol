@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 /// Reference implementation - Pure Rust model of vault behavior
 /// This is the "correct" mathematical model that the contract must match
 /// Used for differential fuzzing to detect state divergence
@@ -9,6 +11,13 @@ pub struct ReferenceVault {
     pub total_shares: u128,
     pub user_shares: HashMap<String, u128>,
     pub admin_withdrawn: u128, // Track what admin has taken out
+    pub contract_balance: u128,
+}
+
+impl Default for ReferenceVault {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ReferenceVault {
@@ -18,6 +27,7 @@ impl ReferenceVault {
             total_shares: 0,
             user_shares: HashMap::new(),
             admin_withdrawn: 0,
+            contract_balance: 0,
         }
     }
 
@@ -29,10 +39,8 @@ impl ReferenceVault {
         } else {
             // shares = (assets * total_shares) / total_assets
             // Use checked math to match contract behavior
-            match Self::checked_mul_div(assets, self.total_shares, self.total_assets) {
-                Some(shares) => shares,
-                None => 0, // Overflow - contract would reject
-            }
+            Self::checked_mul_div(assets, self.total_shares, self.total_assets)
+                .unwrap_or_default()
         }
     }
 
@@ -43,10 +51,8 @@ impl ReferenceVault {
         }
 
         // assets = (shares * total_assets) / total_shares
-        match Self::checked_mul_div(shares, self.total_assets, self.total_shares) {
-            Some(assets) => assets,
-            None => 0, // Overflow
-        }
+        Self::checked_mul_div(shares, self.total_assets, self.total_shares)
+            .unwrap_or_default()
     }
 
     /// Execute deposit
@@ -67,6 +73,11 @@ impl ReferenceVault {
             .total_assets
             .checked_add(assets)
             .ok_or("Overflow on total_assets")?;
+
+        self.contract_balance = self
+            .contract_balance
+            .checked_add(assets)
+            .ok_or("Overflow on contract_balance")?;
 
         self.total_shares = self
             .total_shares
@@ -94,9 +105,11 @@ impl ReferenceVault {
 
         let assets = self.preview_redeem(shares);
 
-        // Check if contract has sufficient balance for withdrawal
-        // Available balance = total_assets - admin_withdrawn (not yet returned)
-        let available_balance = self.total_assets.saturating_sub(self.admin_withdrawn);
+        // Check if contract has sufficient liquid balance for withdrawal.
+        // This mirrors real contract behavior where funds can be present in
+        // the contract even if they are not counted as total_assets (e.g.
+        // principal returned before it was ever withdrawn).
+        let available_balance = self.contract_balance;
         
         // Allow up to 10 wei rounding tolerance (standard DeFi practice)
         // Complex sequences with multiple operations can compound rounding to 5-10 wei
@@ -113,6 +126,11 @@ impl ReferenceVault {
             .total_assets
             .checked_sub(assets)
             .ok_or("Underflow on total_assets")?;
+
+        self.contract_balance = self
+            .contract_balance
+            .checked_sub(assets)
+            .ok_or("Underflow on contract_balance")?;
 
         self.total_shares = self
             .total_shares
@@ -131,8 +149,8 @@ impl ReferenceVault {
             return Err("Zero withdrawal".to_string());
         }
 
-        // Check available balance (total_assets - already withdrawn)
-        let available_balance = self.total_assets.saturating_sub(self.admin_withdrawn);
+        // Check available liquid balance in contract.
+        let available_balance = self.contract_balance;
         if amount > available_balance {
             return Err(format!(
                 "Insufficient vault balance: need {}, available {}",
@@ -140,10 +158,23 @@ impl ReferenceVault {
             ));
         }
 
+        // Do not allow admin to pull more than accounted user assets.
+        if amount > self.total_assets {
+            return Err(format!(
+                "Insufficient accounted assets: need {}, total_assets {}",
+                amount, self.total_assets
+            ));
+        }
+
         self.admin_withdrawn = self
             .admin_withdrawn
             .checked_add(amount)
             .ok_or("Overflow on admin_withdrawn")?;
+
+        self.contract_balance = self
+            .contract_balance
+            .checked_sub(amount)
+            .ok_or("Underflow on contract_balance")?;
 
         Ok(())
     }
@@ -174,8 +205,15 @@ impl ReferenceVault {
         // Track admin returned funds
         self.admin_withdrawn = self
             .admin_withdrawn
-            .checked_sub(principal.min(self.admin_withdrawn))
-            .unwrap_or(0);
+            .saturating_sub(principal.min(self.admin_withdrawn));
+
+        let total_inflow = principal
+            .checked_add(yield_amount)
+            .ok_or("Overflow on principal+yield")?;
+        self.contract_balance = self
+            .contract_balance
+            .checked_add(total_inflow)
+            .ok_or("Overflow on contract_balance")?;
 
         Ok(())
     }
@@ -196,7 +234,7 @@ impl ReferenceVault {
         }
 
         // Use u256 math to avoid overflow in intermediate multiplication
-        let result = (a as u128)
+        let result = a
             .checked_mul(b)?
             .checked_div(c)?;
 
@@ -239,18 +277,21 @@ mod tests {
         assert_eq!(shares, 1000);
         assert_eq!(vault.total_assets, 1000);
         assert_eq!(vault.total_shares, 1000);
+        assert_eq!(vault.contract_balance, 1000);
 
         // Second deposit also 1:1 (no yield yet)
         let shares = vault.deposit("bob", 500).unwrap();
         assert_eq!(shares, 500);
         assert_eq!(vault.total_assets, 1500);
         assert_eq!(vault.total_shares, 1500);
+        assert_eq!(vault.contract_balance, 1500);
 
         // Withdrawal gets back proportional amount
         let assets = vault.withdraw("alice", 1000).unwrap();
         assert_eq!(assets, 1000);
         assert_eq!(vault.total_assets, 500);
         assert_eq!(vault.total_shares, 500);
+        assert_eq!(vault.contract_balance, 500);
     }
 
     #[test]
@@ -290,11 +331,13 @@ mod tests {
         vault.admin_withdraw(500).unwrap();
         assert_eq!(vault.total_assets, 1000); // Accounting unchanged
         assert_eq!(vault.admin_withdrawn, 500);
+        assert_eq!(vault.contract_balance, 500);
 
         // Admin returns 500 principal + 50 yield
         vault.admin_deposit_yield(500, 50).unwrap();
         assert_eq!(vault.total_assets, 1050); // Only yield added
         assert_eq!(vault.admin_withdrawn, 0); // Balanced
+        assert_eq!(vault.contract_balance, 1050);
 
         // Alice can now withdraw with yield
         let assets = vault.withdraw("alice", 1000).unwrap();

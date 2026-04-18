@@ -1,0 +1,15 @@
+# DeFa v2 deployment outputs
+# Date: Sat Apr 18 23:01:01 PKT 2026
+
+export NODE="https://public-zigchain-testnet-rpc.numia.xyz:443"
+export CHAIN_ID="zig-test-2"
+export WALLET="test-wallet"
+export ADMIN_ADDR="zig1ug335mpcdn2vpk8p08v4k9z7cqtdg0jj4tqr92"
+
+export POOL_FACTORY_CODE_ID="2165"
+export PSP_POOL_CODE_ID="2166"
+export CREDIT_MANAGER_CODE_ID="2167"
+export YIELD_DISTRIBUTOR_CODE_ID="2168"
+export YIELD_RESERVE_CODE_ID="2169"
+
+export POOL_FACTORY_ADDRESS="zig1yym8qlew3y3cpvkw458vm9s024qmskp9pagywqkmkww7cny6lhsq7etypg"

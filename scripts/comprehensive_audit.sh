@@ -30,7 +30,7 @@ trap 'echo -e "\n${RED}[ERROR]${NC} Script interrupted. Check audit report for p
 # Load contract addresses
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ ! -f "$SCRIPT_DIR/vault_addresses.txt" ]; then
-    echo "Error: vault_addresses.txt not found. Run deploy_tokenfactory.sh first."
+    echo "Error: vault_addresses.txt not found. Run deploy_v2_stack.sh first."
     exit 1
 fi
 source "$SCRIPT_DIR/vault_addresses.txt"

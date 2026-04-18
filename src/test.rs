@@ -340,7 +340,7 @@ mod tests {
             },
         ).unwrap();
 
-        let vault_info: VaultInfoResponse = from_json(&query(deps.as_ref(), env.clone(), QueryMsg::VaultInfo {}).unwrap()).unwrap();
+        let vault_info: VaultInfoResponse = from_json(query(deps.as_ref(), env.clone(), QueryMsg::VaultInfo {}).unwrap()).unwrap();
         // Total deposited should be 1000 (orig) + 500 (yield) = 1500
         assert_eq!(Uint128::new(1500), vault_info.total_deposited);
         assert_eq!("1.500000", vault_info.price_per_share);

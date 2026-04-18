@@ -1,5 +1,18 @@
 [alias]
-wasm = "build --release --lib --target wasm32-unknown-unknown"
-unit-test = "test --lib"
-schema = "run --bin schema"
-integration-test = "test --lib integration_tests"
+wasm                   = "build --release --lib --target wasm32-unknown-unknown"
+wasm-pool-factory      = "build --release --lib --target wasm32-unknown-unknown -p defa-pool-factory"
+wasm-psp-pool          = "build --release --lib --target wasm32-unknown-unknown -p defa-psp-pool"
+wasm-credit-manager    = "build --release --lib --target wasm32-unknown-unknown -p defa-credit-manager"
+wasm-yield-distributor = "build --release --lib --target wasm32-unknown-unknown -p defa-yield-distributor"
+wasm-yield-reserve     = "build --release --lib --target wasm32-unknown-unknown -p defa-yield-reserve"
+unit-test              = "test --lib"
+schema                 = "run --bin schema"
+integration-test       = "test --lib integration_tests"
+
+[target.wasm32-unknown-unknown]
+rustflags = [
+  "-C", "link-arg=-s",
+  "-C", "target-feature=+bulk-memory",
+  "-C", "target-feature=+reference-types",
+  "-C", "target-feature=+sign-ext",
+]

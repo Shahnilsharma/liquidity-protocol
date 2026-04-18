@@ -11,14 +11,14 @@ fn debug_latest_fail() {
     let mut reference = ReferenceVault::new();
     
     println!("=== Action 1: Deposit user_b 2337169 ===");
-    let v1 = execute_deposit(&mut vault, "user_b", 2337169).unwrap();
-    let r1 = reference.deposit("user_b", 2337169).unwrap();
+    execute_deposit(&mut vault, "user_b", 2337169).unwrap();
+    reference.deposit("user_b", 2337169).unwrap();
     println!("Vault: dep={}, shares={}, balance={}", vault.total_deposited, vault.total_lp_supply, vault.stablecoin_balance);
     println!("Ref: assets={}, shares={}, withdrawn={}", reference.total_assets, reference.total_shares, reference.admin_withdrawn);
 
     println!("\n=== Action 2: Deposit user_a 1000000 ===");
-    let v2 = execute_deposit(&mut vault, "user_a", 1000000).unwrap();
-    let r2 = reference.deposit("user_a", 1000000).unwrap();
+    execute_deposit(&mut vault, "user_a", 1000000).unwrap();
+    reference.deposit("user_a", 1000000).unwrap();
     println!("Vault: dep={}, shares={}, balance={}", vault.total_deposited, vault.total_lp_supply, vault.stablecoin_balance);
     println!("Ref: assets={}, shares={}, withdrawn={}", reference.total_assets, reference.total_shares, reference.admin_withdrawn);
 

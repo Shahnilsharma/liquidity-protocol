@@ -416,7 +416,7 @@ dependencies = [
  "cw-storage-plus",
  "cw-utils",
  "itertools 0.14.0",
- "prost 0.14.1",
+ "prost 0.14.3",
  "schemars",
  "serde",
  "sha2",
@@ -460,6 +460,96 @@ dependencies = [
  "semver",
  "serde",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "defa-credit-manager"
+version = "0.1.0"
+dependencies = [
+ "cosmwasm-schema",
+ "cosmwasm-std",
+ "cw-storage-plus",
+ "cw2",
+ "defa-types",
+ "schemars",
+ "serde",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "defa-pool-factory"
+version = "0.1.0"
+dependencies = [
+ "cosmwasm-schema",
+ "cosmwasm-std",
+ "cw-storage-plus",
+ "cw2",
+ "defa-credit-manager",
+ "defa-psp-pool",
+ "defa-types",
+ "defa-yield-distributor",
+ "defa_yield_reserve",
+ "schemars",
+ "serde",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "defa-psp-pool"
+version = "0.1.0"
+dependencies = [
+ "cosmwasm-schema",
+ "cosmwasm-std",
+ "cw-multi-test",
+ "cw-storage-plus",
+ "cw2",
+ "defa-types",
+ "defa_yield_reserve",
+ "proptest",
+ "prost 0.13.5",
+ "prost-types",
+ "schemars",
+ "serde",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "defa-types"
+version = "0.1.0"
+dependencies = [
+ "cosmwasm-schema",
+ "cosmwasm-std",
+ "schemars",
+ "serde",
+]
+
+[[package]]
+name = "defa-yield-distributor"
+version = "0.1.0"
+dependencies = [
+ "cosmwasm-schema",
+ "cosmwasm-std",
+ "cw-storage-plus",
+ "cw2",
+ "defa-types",
+ "defa_yield_reserve",
+ "schemars",
+ "serde",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "defa_yield_reserve"
+version = "0.1.0"
+dependencies = [
+ "cosmwasm-schema",
+ "cosmwasm-std",
+ "cw-storage-plus",
+ "cw2",
+ "defa-types",
+ "schemars",
+ "serde",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
@@ -827,12 +917,16 @@ dependencies = [
  "cw-multi-test",
  "cw-storage-plus",
  "cw2",
+ "defa-credit-manager",
+ "defa-pool-factory",
+ "defa-psp-pool",
+ "defa-types",
+ "defa-yield-distributor",
+ "defa_yield_reserve",
  "proptest",
  "prost 0.13.5",
- "prost-types",
  "schemars",
  "serde",
- "test-case",
  "thiserror 2.0.17",
 ]
 
@@ -968,12 +1062,12 @@ dependencies = [
 
 [[package]]
 name = "prost"
-version = "0.14.1"
+version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7231bd9b3d3d33c86b58adbac74b5ec0ad9f496b19d22801d773636feaa95f3d"
+checksum = "d2ea70524a2f82d518bce41317d0fae74151505651af45faf1ffbd6fd33f0568"
 dependencies = [
  "bytes",
- "prost-derive 0.14.1",
+ "prost-derive 0.14.3",
 ]
 
 [[package]]
@@ -991,9 +1085,9 @@ dependencies = [
 
 [[package]]
 name = "prost-derive"
-version = "0.14.1"
+version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9120690fafc389a67ba3803df527d0ec9cbbc9cc45e4cc20b332996dfb672425"
+checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
  "itertools 0.14.0",
@@ -1369,39 +1463,6 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
-]
-
-[[package]]
-name = "test-case"
-version = "3.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb2550dd13afcd286853192af8601920d959b14c401fcece38071d53bf0768a8"
-dependencies = [
- "test-case-macros",
-]
-
-[[package]]
-name = "test-case-core"
-version = "3.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adcb7fd841cd518e279be3d5a3eb0636409487998a4aff22f3de87b81e88384f"
-dependencies = [
- "cfg-if",
- "proc-macro2",
- "quote",
- "syn 2.0.111",
-]
-
-[[package]]
-name = "test-case-macros"
-version = "3.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c89e72a01ed4c579669add59014b9a524d609c0c88c6a585ce37485879f6ffb"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.111",
- "test-case-core",
 ]
 
 [[package]]

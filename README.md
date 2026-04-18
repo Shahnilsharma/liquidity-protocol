@@ -349,9 +349,13 @@ The **withdrawal_delay_seconds** parameter is **REQUIRED** and **IMMUTABLE** aft
 
 ### Quick Start
 
-#### 1. Optimize WASM 
-you can SKIP to [Uploading](#2-upload-contract) by using [optimized wasm](./artifacts/liquidity_protocol.wasm)
-or SKIP to [Instantiate](#3-instantiate-with-withdrawal-delay) by using uploaded CODE_ID=1992
+#### 1. Build v2 WASM Artifacts
+you can skip to [Upload Contracts](#2-upload-contracts-v2-stack) if you already have optimized artifacts for:
+- `artifacts/defa_pool_factory.wasm`
+- `artifacts/defa_psp_pool.wasm`
+- `artifacts/defa_credit_manager.wasm`
+- `artifacts/defa_yield_distributor.wasm`
+- `artifacts/defa_yield_reserve.wasm`
 
 ```bash
 docker run --rm -v "$(pwd)":/code \
@@ -359,21 +363,27 @@ docker run --rm -v "$(pwd)":/code \
   --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry \
   cosmwasm/workspace-optimizer:0.17.0
 ```
-This creates `artifacts/liquidity_protocol.wasm` (~175 KB)
+This creates optimized artifacts in `artifacts/` for the v2 stack.
 
-#### 2. Upload Contract
+#### 2. Upload Contracts (v2 Stack)
 ```bash
 # Set Enviroment (for testnet)
 export RPC_URL=https://public-zigchain-testnet-rpc.numia.xyz
 export CHAIN_ID=zig-test-2
 export WALLET=<your_wallet>
 
-zigchaind tx wasm store artifacts/liquidity_protocol.wasm \
+zigchaind tx wasm store artifacts/defa_pool_factory.wasm \
   --from $WALLET  \
   --node $RPC_URL \
   --chain-id $CHAIN_ID \
   --gas auto --gas-adjustment 1.5 --gas-prices 0.0025uzig\
   -y
+
+# Repeat store for:
+# artifacts/defa_psp_pool.wasm
+# artifacts/defa_credit_manager.wasm
+# artifacts/defa_yield_distributor.wasm
+# artifacts/defa_yield_reserve.wasm
 
 # Get code_id from transaction
  export TX_HASH=<TX_HASH>
@@ -384,30 +394,27 @@ zigchaind tx wasm store artifacts/liquidity_protocol.wasm \
    -o json \
  | jq -r '
      .events[]
-     | select(.type == "instantiate")
+     | select(.type == "store_code")
      | .attributes[]
-     | select(.key == "_contract_address")
+     | select(.key == "code_id")
      | .value
    ' | head -n1
  
- export CODE_ID =<code_id>
+ export POOL_FACTORY_CODE_ID=<code_id>
 ```
 
-#### 3. Instantiate with Withdrawal Delay
+#### 3. Instantiate PoolFactory
 ```bash
-zigchaind tx wasm instantiate $CODE_ID '{
-  "stablecoin_denom": "uzig",
-  "lp_subdenom": "lptoken",
-  "lp_minting_cap": "10000000000000",
-  "can_change_minting_cap": false,
-  "withdrawal_delay_seconds": 120,
-  "description": "ZigChain Vault LP Token",
-  "admin": "zig1staghsausa8tee05uelp8cjklv2qpuke5gmna6"
+zigchaind tx wasm instantiate $POOL_FACTORY_CODE_ID '{
+  "admin": "zig1staghsausa8tee05uelp8cjklv2qpuke5gmna6",
+  "psp_pool_code_id": 100,
+  "credit_manager_code_id": 101,
+  "yield_distributor_code_id": 102,
+  "yield_reserve_code_id": 103
 }' \
   --from zig1staghsausa8tee05uelp8cjklv2qpuke5gmna6 \
-  --amount 100000000uzig \
   --admin zig1staghsausa8tee05uelp8cjklv2qpuke5gmna6 \
-  --label "zigchain-vault-v1" \
+  --label "defa-pool-factory-v2" \
   --node https://public-zigchain-testnet-rpc.numia.xyz \
   --chain-id zig-test-2 \
   --gas auto --gas-adjustment 1.5 \
@@ -415,11 +422,9 @@ zigchaind tx wasm instantiate $CODE_ID '{
 ```
 
 **Important Notes:**
-- `lp_subdenom` **MUST be 3-44 characters** and start with lowercase letter (TokenFactory requirement)
-- The 100000000uzig (100 ZIG) is the TokenFactory denom creation fee, NOT a deposit
-- **withdrawal_delay_seconds is REQUIRED** (no default value)
-- Valid range: 120 (2 minutes) to 2,592,000 (30 days)
-- **This value CANNOT be changed after deployment!**
+- Upload all five v2 code artifacts before instantiating `PoolFactory`.
+- Use emitted code IDs for `psp_pool_code_id`, `credit_manager_code_id`, `yield_distributor_code_id`, and `yield_reserve_code_id`.
+- After `PoolFactory` deployment, create per-facility pools with `CreatePool`.
 
 #### 4. Save Configuration
 ```bash
@@ -438,18 +443,21 @@ zigchaind q tx $TX_HASH \
   ' | head -n1
 
 
-# Save to scripts/vault_addresses.txt
-export VAULT_ADDRESS="zig1..."
-export LP_FULL_DENOM="coin.zig1...vaulttoken"
-export STABLECOIN_DENOM="uzig"
+# Save to scripts/v2_addresses.txt
+export POOL_FACTORY_ADDRESS="zig1..."
+export POOL_FACTORY_CODE_ID="..."
+export PSP_POOL_CODE_ID="..."
+export CREDIT_MANAGER_CODE_ID="..."
+export YIELD_DISTRIBUTOR_CODE_ID="..."
+export YIELD_RESERVE_CODE_ID="..."
 ```
 
 <!-- ### Automated Deployment
 
 Use the provided script for guided deployment:
 ```bash
-# Edit scripts/deploy_tokenfactory.sh with your configuration
-./scripts/deploy_tokenfactory.sh
+# Edit scripts/deploy_v2_stack.sh with your configuration
+./scripts/deploy_v2_stack.sh
 ``` -->
 
 <!-- **The script will prompt for withdrawal delay with recommendations.** -->
@@ -637,7 +645,8 @@ src/
 └── lib.rs        # Library exports
 
 scripts/
-├── deploy_tokenfactory.sh      # Automated deployment with withdrawal_delay prompt
+├── deploy_v2_stack.sh          # v2 stack deployment (upload + PoolFactory instantiate)
+├── deploy_tokenfactory.sh      # Deprecated wrapper to deploy_v2_stack.sh
 └── interact_tokenfactory.sh    # Interactive CLI for vault operations
 
 docs/

@@ -1,7 +1,6 @@
 /// Mock Vault for Testing Without TokenFactory
 /// This allows fuzz tests to run without blockchain-specific TokenFactory integration
 /// Core vault logic is tested, TokenFactory is mocked
-use cosmwasm_std::{Addr, Coin, Timestamp, Uint128};
 use std::collections::HashMap;
 
 /// Mock vault that tracks state without actual contract calls
@@ -67,11 +66,10 @@ impl MockVault {
             amount // 1:1 for first deposit
         } else {
             // shares = (amount * total_lp_supply) / total_deposited
-            let shares = (amount as u128)
+            amount
                 .checked_mul(self.total_lp_supply)
                 .and_then(|r| r.checked_div(self.total_deposited))
-                .ok_or("Overflow in share calculation")?;
-            shares
+                .ok_or("Overflow in share calculation")?
         };
         
         // Reject if shares would be zero
@@ -107,7 +105,7 @@ impl MockVault {
         let stablecoin_amount = if self.total_lp_supply == 0 {
             0
         } else {
-            (lp_amount as u128)
+            lp_amount
                 .checked_mul(self.total_deposited)
                 .and_then(|r| r.checked_div(self.total_lp_supply))
                 .ok_or("Overflow in withdrawal calculation")?
@@ -129,7 +127,7 @@ impl MockVault {
         
         self.pending_withdrawals
             .entry(user.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(PendingWithdrawal {
                 id: withdrawal_id,
                 amount: stablecoin_amount,

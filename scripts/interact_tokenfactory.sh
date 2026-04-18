@@ -22,7 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SCRIPT_DIR/vault_addresses.txt" ]; then
     source "$SCRIPT_DIR/vault_addresses.txt"
 else
-    echo "Error: vault_addresses.txt not found in $SCRIPT_DIR. Run deploy_tokenfactory.sh first."
+    echo "Error: vault_addresses.txt not found in $SCRIPT_DIR. Run deploy_v2_stack.sh first."
     exit 1
 fi
 

@@ -388,7 +388,7 @@ Now that you understand the basics:
 
 If you need a vault for a different token (USDT, USDC, ATOM, etc.):
 
-1. **Edit the deployment script** (`scripts/deploy_tokenfactory.sh`):
+1. **Edit the deployment script** (`scripts/deploy_v2_stack.sh`):
    ```bash
    # Change the STABLECOIN_DENOM variable
    STABLECOIN_DENOM="uusdt"  # Instead of "uzig"
@@ -396,7 +396,7 @@ If you need a vault for a different token (USDT, USDC, ATOM, etc.):
 
 2. **Run the deployment**:
    ```bash
-   bash scripts/deploy_tokenfactory.sh
+   bash scripts/deploy_v2_stack.sh
    ```
 
 3. **New vault created** - You'll get a new contract address that accepts your chosen token

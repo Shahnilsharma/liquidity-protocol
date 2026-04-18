@@ -51,7 +51,7 @@ pub fn instantiate(
     // Security check: withdrawal delay must be within reasonable bounds
     // Min: 2 minutes (120s) for flexibility, Max: 30 days (2,592,000s) for security
     let withdrawal_delay = msg.withdrawal_delay_seconds;
-    if withdrawal_delay < MIN_WITHDRAWAL_DELAY || withdrawal_delay > MAX_WITHDRAWAL_DELAY {
+    if !(MIN_WITHDRAWAL_DELAY..=MAX_WITHDRAWAL_DELAY).contains(&withdrawal_delay) {
         return Err(ContractError::InvalidWithdrawalDelay {
             min: MIN_WITHDRAWAL_DELAY,
             max: MAX_WITHDRAWAL_DELAY,

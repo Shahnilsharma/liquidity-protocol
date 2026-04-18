@@ -57,7 +57,7 @@ zigchaind query wasm contract-state smart $VAULT_ADDRESS '{"config":{}}' --node 
 
 **Expected:** Shows admin address (should be `test-wallet` address)
 
-**If error:** Run `./scripts/deploy_tokenfactory.sh` first
+**If error:** Run `./scripts/deploy_v2_stack.sh` first
 
 ---
 

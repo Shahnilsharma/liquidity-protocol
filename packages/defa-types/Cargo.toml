@@ -1,0 +1,18 @@
+[package]
+name = "defa-types"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+test-addr-bypass = []
+
+[dependencies]
+cosmwasm-schema = { workspace = true }
+cosmwasm-std = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }

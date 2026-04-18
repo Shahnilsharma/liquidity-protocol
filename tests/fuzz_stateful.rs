@@ -17,7 +17,6 @@ use reference_model::ReferenceVault;
 #[derive(Debug, Clone)]
 enum VaultAction {
     Deposit { user: String, amount: u128 },
-    Withdraw { user: String, shares: u128 },
     WithdrawAll { user: String },
     AdminWithdraw { amount: u128 },
     AdminDepositYield { principal: u128, yield_amount: u128 },
@@ -147,7 +146,7 @@ proptest! {
                                 // This is expected behavioral difference - MockVault models two-step
                                 // withdrawal (request + claim) while Reference is atomic.
                             }
-                            (Ok(c_amount), Err(e)) => {
+                            (Ok(_c_amount), Err(e)) => {
                                 // MockVault succeeded but Reference failed
                                 // Check if this is just rounding (< 10 wei) or a real logic error
                                 let error_msg = format!("{}", e);
@@ -167,7 +166,7 @@ proptest! {
                                     );
                                 }
                             }
-                            (Err(e), Ok(r_amount)) => {
+                            (Err(e), Ok(_r_amount)) => {
                                 // MockVault failed but Reference succeeded
                                 let error_msg = format!("{}", e);
                                 if error_msg.contains("Insufficient contract balance") {
@@ -250,7 +249,7 @@ proptest! {
                 
                 VaultAction::DepositMaxU128 { user } => {
                     // Overflow probe
-                    let result = execute_deposit(&mut vault, user, u128::MAX);
+                    let _result = execute_deposit(&mut vault, user, u128::MAX);
                     // Should reject or handle gracefully, never panic
                     // Error is acceptable
                 }
@@ -265,7 +264,6 @@ proptest! {
                     );
                 }
                 
-                _ => {}
             }
             
             // After EVERY action, check global invariants
@@ -387,8 +385,6 @@ proptest! {
                 *user_shares.entry(user.clone()).or_insert(0) += shares.u128();
             }
         }
-        
-        let initial_total = vault.total_deposited;
         
         // Phase 2: Admin adds yields over time
         for yield_amount in yields {

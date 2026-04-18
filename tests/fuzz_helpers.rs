@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 /// Common utilities and helpers for fuzz testing (Mock Version)
 /// This module uses MockVault to test core logic without TokenFactory
 use cosmwasm_std::Uint128;
@@ -14,7 +16,6 @@ pub const VICTIM: &str = "victim";
 
 // Token denoms
 pub const STABLECOIN: &str = "uzig";
-pub const INITIAL_BALANCE: u128 = 1_000_000_000_000; // 1M uzig per user
 
 // Include the mock vault implementation
 mod mock_vault_impl {
@@ -158,7 +159,7 @@ mod mock_vault_impl {
 
             self.pending_withdrawals
                 .entry(user.to_string())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(pending);
 
             self.total_pending_withdrawals = self.total_pending_withdrawals
@@ -267,8 +268,9 @@ mod mock_vault_impl {
                 .ok_or("Overflow in total_deposited")?;
 
             // Track principal return (reduces admin_withdrawn)
-            self.admin_withdrawn = self.admin_withdrawn.checked_sub(principal.min(self.admin_withdrawn))
-                .unwrap_or(0);
+            self.admin_withdrawn = self
+                .admin_withdrawn
+                .saturating_sub(principal.min(self.admin_withdrawn));
 
             // Both principal and yield restore the balance
             let total = principal.checked_add(yield_amount)
@@ -424,5 +426,7 @@ pub fn assert_vault_invariants(vault: &MockVault, tag: &str) {
     }
     
     // Invariant 4: Internal consistency check
-    vault.verify_invariants().expect(&format!("{}: Invariant check failed", tag));
+    vault
+        .verify_invariants()
+        .unwrap_or_else(|_| panic!("{}: Invariant check failed", tag));
 }
